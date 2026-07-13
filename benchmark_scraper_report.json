@@ -1,0 +1,82 @@
+{
+  "keyword": "restaurants",
+  "location": "Berlin",
+  "limit": 5,
+  "leads_found": 2,
+  "startup_ms": 63.7,
+  "total_ms": 53802.4,
+  "first_progress_ms": 63.7,
+  "stage_timings": {
+    "search_initialization": 0.1,
+    "search_engine_request": 20452.9,
+    "page_navigation": 32977.8,
+    "parse": 299.7,
+    "merge_snippets": 5.4,
+    "benchmark_total": 53802.4
+  },
+  "browser_launches": 1,
+  "network_requests": 11,
+  "cache_hits": 0,
+  "browser_renders": 1,
+  "strategy_http": 3,
+  "strategy_playwright": 1,
+  "bottleneck": "benchmark_total",
+  "progress_events": [
+    {
+      "t_ms": 63.7,
+      "stage": "web_search",
+      "message": "Searching internet (DDGS)..."
+    },
+    {
+      "t_ms": 153.3,
+      "stage": "web_search",
+      "message": "DDGS search \u2014 0 URLs found"
+    },
+    {
+      "t_ms": 11759.4,
+      "stage": "web_search",
+      "message": "Discovery \u2014 5 URLs"
+    },
+    {
+      "t_ms": 14940.2,
+      "stage": "web_search",
+      "message": "Discovery \u2014 8 URLs"
+    },
+    {
+      "t_ms": 15209.8,
+      "stage": "web_search",
+      "message": "Bing search \u2014 8 URLs found"
+    },
+    {
+      "t_ms": 18032.6,
+      "stage": "web_search",
+      "message": "DDG HTML fallback \u2014 8 URLs"
+    },
+    {
+      "t_ms": 20516.8,
+      "stage": "web_search",
+      "message": "Found 8 URLs \u2014 starting crawl"
+    },
+    {
+      "t_ms": 48585.8,
+      "stage": "crawl",
+      "message": "Crawling 1/5 \u2014 https://auslanderblog.com/foodie-restaurant-guide-berlin/"
+    },
+    {
+      "t_ms": 50230.3,
+      "stage": "crawl",
+      "message": "Crawling 2/5 \u2014 https://thecuriouspixie.com/berlin-eats/"
+    }
+  ],
+  "profiler": {
+    "total_ms": 53802.5,
+    "stages": [
+      {
+        "name": "benchmark_total",
+        "total_ms": 53802.4,
+        "count": 1
+      }
+    ],
+    "bottleneck": "benchmark_total"
+  }
+}
