@@ -1,14 +1,17 @@
 import { cn } from "@/lib/utils";
 
 export function Card({
+  id,
   className,
   children,
 }: {
+  id?: string;
   className?: string;
   children: React.ReactNode;
 }) {
   return (
     <div
+      id={id}
       className={cn(
         "liquid-glass rounded-xl text-card-foreground transition-all duration-200 hover:shadow-[0_12px_36px_hsl(var(--foreground)/0.1)]",
         className

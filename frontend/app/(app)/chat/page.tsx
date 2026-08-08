@@ -66,7 +66,7 @@ function cleanReplyBody(raw: string | null | undefined): string {
     }
   }
 
-  const bodyMatch = text.match(/"body"\s*:\s*"((?:\\.|[^"\\])*)"/is);
+  const bodyMatch = text.match(/"body"\s*:\s*"((?:\\.|[^"\\])*)"/i);
   if (bodyMatch) {
     return bodyMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').trim();
   }
@@ -508,13 +508,13 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accounts.length, selectedLeadId]);
 
-  const defaultAccountId = useMemo(() => {
+  const defaultAccountId = useMemo((): number | "" => {
     const def = accounts.find((a) => a.is_default) || accounts[0];
-    return def?.id ?? "";
+    return typeof def?.id === "number" ? def.id : "";
   }, [accounts]);
 
   useEffect(() => {
-    if (accountId === "" && defaultAccountId !== "") {
+    if (accountId === "" && typeof defaultAccountId === "number") {
       setAccountId(defaultAccountId);
     }
   }, [accountId, defaultAccountId]);
