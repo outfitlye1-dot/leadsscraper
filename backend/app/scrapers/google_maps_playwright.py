@@ -500,8 +500,8 @@ def scrape_google_maps_playwright(
         f"{keyword} in {location}".strip() if keyword and location else (keyword or location)
     )
     # No-website mode needs more cards scanned (many listings have sites)
-    per_card = 2.6 if require_no_website else 2.0
-    budget = max(25.0, min(float(max_seconds or 45.0), 12.0 + limit * per_card))
+    per_card = 3.2 if require_no_website else 2.4
+    budget = max(35.0, min(float(max_seconds or 75.0), 15.0 + limit * per_card))
     deadline = time.monotonic() + budget
 
     def aborted() -> bool:
