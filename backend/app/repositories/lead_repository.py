@@ -1,9 +1,28 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, cast, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.lead import Lead, LeadStatus
+
+
+def _uses_sqlite() -> bool:
+    from app.core.config import get_settings
+
+    return "sqlite" in (get_settings().DATABASE_URL or "").lower()
+
+
+def _background_flag_expr():
+    """scrape_context.background — SQLite json_extract vs Postgres JSON path."""
+    if _uses_sqlite():
+        return func.json_extract(Lead.intelligence_meta, "$.scrape_context.background")
+    try:
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        return cast(Lead.intelligence_meta, JSONB)["scrape_context"]["background"].as_string()
+    except Exception:
+        # Fallback: treat as text comparison via generic JSON accessor
+        return Lead.intelligence_meta["scrape_context"]["background"].as_string()
 
 
 class LeadRepository:
@@ -128,15 +147,20 @@ class LeadRepository:
         return query
 
     def _only_background_filter(self):
-        flag = func.json_extract(Lead.intelligence_meta, "$.scrape_context.background")
-        return or_(flag == 1, flag == True, flag == "true")  # noqa: E712
+        flag = _background_flag_expr()
+        return or_(flag == "1", flag == "true", flag == "True", flag == "t")
 
     def _exclude_background_filter(self):
-        flag = func.json_extract(Lead.intelligence_meta, "$.scrape_context.background")
+        flag = _background_flag_expr()
         return or_(
             Lead.intelligence_meta.is_(None),
             flag.is_(None),
-            and_(flag != 1, flag != True, flag != "true"),  # noqa: E712
+            and_(
+                flag != "1",
+                flag != "true",
+                flag != "True",
+                flag != "t",
+            ),
         )
 
     def find_background_for_scrape_request(self, user_id: int, data, limit: int) -> list[Lead]:
@@ -365,13 +389,9 @@ class LeadRepository:
         )
 
     def count_background_leads(self, user_id: int) -> int:
-        flag = func.json_extract(Lead.intelligence_meta, "$.scrape_context.background")
         return (
             self.db.query(func.count(Lead.id))
-            .filter(
-                Lead.user_id == user_id,
-                or_(flag == 1, flag == True, flag == "true"),  # noqa: E712
-            )
+            .filter(Lead.user_id == user_id, self._only_background_filter())
             .scalar()
             or 0
         )
@@ -396,13 +416,9 @@ class LeadRepository:
         )
 
     def list_recent_background_leads(self, user_id: int, limit: int = 10) -> list[Lead]:
-        flag = func.json_extract(Lead.intelligence_meta, "$.scrape_context.background")
         return (
             self.db.query(Lead)
-            .filter(
-                Lead.user_id == user_id,
-                or_(flag == 1, flag == True, flag == "true"),  # noqa: E712
-            )
+            .filter(Lead.user_id == user_id, self._only_background_filter())
             .order_by(Lead.created_at.desc())
             .limit(limit)
             .all()
