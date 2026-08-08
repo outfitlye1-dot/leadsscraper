@@ -1,0 +1,26 @@
+# Vercel must build ONLY the Next.js app in /frontend.
+# If this file is missing, Vercel may pick requirements.txt and deploy Python (wrong).
+requirements.txt
+Dockerfile
+docker-compose.yml
+railway.toml
+app/
+alembic/
+alembic.ini
+tests/
+scripts/
+checkpoints/
+uploads/
+exports/
+data/
+*.db
+*.db-shm
+*.db-wal
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+leadgen.db*

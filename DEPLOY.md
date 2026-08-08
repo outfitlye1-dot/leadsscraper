@@ -33,16 +33,17 @@ Copy remaining keys from `.env.production.example` as needed (Groq keys via Admi
 ## 2) Vercel — frontend
 
 1. Import the **same** GitHub repo.
-2. Root directory: `frontend`
-3. Framework: Next.js (auto)
+2. **Critical:** Project → Settings → General → **Root Directory** = `frontend`  
+   (If this is empty / `.`, Vercel deploys Python from `requirements.txt` and the site crashes.)
+3. Framework Preset: **Next.js**
 4. Environment variables:
 
 | Variable | Value |
 |----------|--------|
-| `NEXT_PUBLIC_API_URL` | `/api` |
-| `BACKEND_INTERNAL_URL` | `https://YOUR-RAILWAY.up.railway.app` |
+| `NEXT_PUBLIC_API_URL` | `https://YOUR-RAILWAY.up.railway.app/api` |
+| `BACKEND_INTERNAL_URL` | `https://YOUR-RAILWAY.up.railway.app` *(optional if using direct API URL above)* |
 
-5. Deploy. Note the production URL (and add preview URLs to `CORS_ORIGINS` if you call Railway directly).
+5. Redeploy. Build logs must show `next build`, **not** `Installing required dependencies from requirements.txt`.
 
 ## 3) After both are live
 

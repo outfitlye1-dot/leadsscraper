@@ -1,0 +1,8 @@
+{
+  "name": "leadsscraper",
+  "private": true,
+  "description": "Monorepo stub — Vercel Root Directory must be set to frontend/",
+  "scripts": {
+    "vercel-build": "npm install --prefix frontend && npm run build --prefix frontend"
+  }
+}
