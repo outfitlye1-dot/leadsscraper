@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./leadgen.db:/app/leadgen.db
+      - ./uploads:/app/uploads
+      - ./exports:/app/exports
+    restart: unless-stopped
