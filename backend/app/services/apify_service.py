@@ -224,10 +224,10 @@ class ApifyService:
         settings = get_settings()
         # Scan more when filtering to no-website businesses
         fetch_limit = limit
-        max_seconds = float(settings.SCRAPER_PLAYWRIGHT_MAPS_MAX_SECONDS or 90.0)
+        max_seconds = float(settings.SCRAPER_PLAYWRIGHT_MAPS_MAX_SECONDS or 45.0)
         if require_no_website:
-            fetch_limit = min(max(limit * 3, 18), 40)
-            max_seconds = max(max_seconds, 100.0)
+            fetch_limit = min(max(limit * 2, 12), 30)
+            max_seconds = max(max_seconds, 55.0)
         raw_items = scrape_google_maps_playwright(
             keyword=keyword,
             location=self._normalize_location(location),

@@ -349,12 +349,12 @@ def _run_maps_session(
                 search_query,
                 limit,
             )
-            page.goto(maps_url, wait_until="domcontentloaded", timeout=18000)
-            page.wait_for_timeout(800)
+            page.goto(maps_url, wait_until="domcontentloaded", timeout=12000)
+            page.wait_for_timeout(500)
             _dismiss_consent(page)
 
             try:
-                page.wait_for_selector(_LISTING_SEL, timeout=10000)
+                page.wait_for_selector(_LISTING_SEL, timeout=7000)
             except Exception:
                 logger.warning("Playwright Maps: no listings for %r", search_query)
                 return results
@@ -500,8 +500,8 @@ def scrape_google_maps_playwright(
         f"{keyword} in {location}".strip() if keyword and location else (keyword or location)
     )
     # No-website mode needs more cards scanned (many listings have sites)
-    per_card = 3.8 if require_no_website else 2.8
-    budget = max(35.0, min(float(max_seconds or 90.0), 18.0 + limit * per_card))
+    per_card = 2.6 if require_no_website else 2.0
+    budget = max(25.0, min(float(max_seconds or 45.0), 12.0 + limit * per_card))
     deadline = time.monotonic() + budget
 
     def aborted() -> bool:
@@ -516,13 +516,13 @@ def scrape_google_maps_playwright(
         return []
 
     # Queue for a free browser slot — waiting does NOT burn the scrape budget.
-    slot_wait_deadline = time.monotonic() + max(90.0, budget * 2)
+    slot_wait_deadline = time.monotonic() + max(45.0, budget)
     acquired = False
     lock = _get_maps_lock()
     while time.monotonic() < slot_wait_deadline:
         if job_control and job_control():
             return []
-        if lock.acquire(timeout=2.0):
+        if lock.acquire(timeout=1.5):
             acquired = True
             break
     if not acquired:

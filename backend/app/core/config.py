@@ -65,12 +65,15 @@ class Settings(BaseSettings):
     SCRAPER_PLAYWRIGHT_CONTEXTS: int = 3
     # Google Maps via Playwright (https://github.com/kevmaindev/Googles-Maps-Scraper)
     SCRAPER_PLAYWRIGHT_MAPS_HEADLESS: bool = True
-    SCRAPER_PLAYWRIGHT_MAPS_MAX_SECONDS: float = 90.0
+    # Keep Maps short on Railway — long runs look "stuck" and often OOM
+    SCRAPER_PLAYWRIGHT_MAPS_MAX_SECONDS: float = 45.0
     # Keep at 1 on Railway/Docker — 2+ Chromiums often OOM ("Target crashed")
     SCRAPER_PLAYWRIGHT_MAPS_CONCURRENCY: int = 1
-    SCRAPER_PLAYWRIGHT_MAPS_RETRIES: int = 2
+    SCRAPER_PLAYWRIGHT_MAPS_RETRIES: int = 1
     # Parallel Maps+Internet uses multiple Chromiums — disable on small hosts
     SCRAPER_PARALLEL_SOURCES: bool = True
+    # On Postgres/Railway: run Internet before Maps so results appear sooner
+    SCRAPER_INTERNET_BEFORE_MAPS: bool = True
     SCRAPER_CHECKPOINT_ENABLED: bool = True
     SCRAPER_AI_SELECTORS: bool = True
 

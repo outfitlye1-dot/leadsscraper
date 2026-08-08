@@ -191,34 +191,57 @@ class AllInOneScraperService:
             db_url = (settings.DATABASE_URL or "").lower()
             serialize = (not settings.SCRAPER_PARALLEL_SOURCES) or ("postgres" in db_url)
             if serialize:
-                prog(10, "google_maps", "Finding local businesses...")
-                try:
-                    maps_leads = scrape_maps()
-                    prog(30, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
-                except Exception as exc:
-                    errors.append(f"Google Maps: {exc}")
-                    prog(30, "google_maps", f"Google Maps failed: {exc}")
-                if job_id and _job_store.is_cancelled(job_id):
-                    prog(100, "cancelled", "Stopped")
-                    return ScraperStartResponse(success=True, count=0, message="Stopped")
-                prog(35, "web_search", "Searching the internet...")
-                try:
-                    search_leads = scrape_web()
-                    prog(50, "web_search", f"Internet: found {len(search_leads)} results")
-                except Exception as exc:
-                    errors.append(f"Internet: {exc}")
-                    prog(50, "web_search", f"Internet failed: {exc}")
+                # Internet first so UI moves and leads arrive even if Maps is slow/blocked
+                internet_first = bool(settings.SCRAPER_INTERNET_BEFORE_MAPS) or (
+                    "postgres" in db_url
+                )
+                if internet_first:
+                    prog(10, "web_search", "Searching the internet...")
+                    try:
+                        search_leads = scrape_web()
+                        prog(35, "web_search", f"Internet: found {len(search_leads)} results")
+                    except Exception as exc:
+                        errors.append(f"Internet: {exc}")
+                        prog(35, "web_search", f"Internet failed: {exc}")
+                    if job_id and _job_store.is_cancelled(job_id):
+                        prog(100, "cancelled", "Stopped")
+                        return ScraperStartResponse(success=True, count=0, message="Stopped")
+                    prog(40, "google_maps", "Finding local businesses on Maps...")
+                    try:
+                        maps_leads = scrape_maps()
+                        prog(55, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
+                    except Exception as exc:
+                        errors.append(f"Google Maps: {exc}")
+                        prog(55, "google_maps", f"Google Maps failed: {exc}")
+                else:
+                    prog(10, "google_maps", "Finding local businesses...")
+                    try:
+                        maps_leads = scrape_maps()
+                        prog(30, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
+                    except Exception as exc:
+                        errors.append(f"Google Maps: {exc}")
+                        prog(30, "google_maps", f"Google Maps failed: {exc}")
+                    if job_id and _job_store.is_cancelled(job_id):
+                        prog(100, "cancelled", "Stopped")
+                        return ScraperStartResponse(success=True, count=0, message="Stopped")
+                    prog(35, "web_search", "Searching the internet...")
+                    try:
+                        search_leads = scrape_web()
+                        prog(50, "web_search", f"Internet: found {len(search_leads)} results")
+                    except Exception as exc:
+                        errors.append(f"Internet: {exc}")
+                        prog(50, "web_search", f"Internet failed: {exc}")
                 if needs_meta:
                     if job_id and _job_store.is_cancelled(job_id):
                         prog(100, "cancelled", "Stopped")
                         return ScraperStartResponse(success=True, count=0, message="Stopped")
-                    prog(55, "meta_ads", "Searching Meta Ad Library...")
+                    prog(58, "meta_ads", "Searching Meta Ad Library...")
                     try:
                         meta_leads = scrape_meta()
-                        prog(60, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
+                        prog(62, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
                     except Exception as exc:
                         errors.append(f"Meta Ads: {exc}")
-                        prog(60, "meta_ads", f"Meta Ads failed: {exc}")
+                        prog(62, "meta_ads", f"Meta Ads failed: {exc}")
             else:
                 prog(10, "parallel", "Google Maps + Internet + Meta Ads (parallel)...")
                 parallel_workers = compute_source_workers(3 if needs_meta else 2)
@@ -278,6 +301,18 @@ class AllInOneScraperService:
             except Exception as exc:
                 errors.append(f"Google Maps: {exc}")
                 prog(40, "google_maps", "Could not finish business search")
+            # Maps-only often hangs/blocked on Railway — fall back to Internet so scrape still works
+            if not maps_leads:
+                from app.services.scraper_job_store import scraper_job_store as _job_store
+
+                if not (job_id and _job_store.is_cancelled(job_id)):
+                    prog(45, "web_search", "Maps empty — searching the internet...")
+                    try:
+                        search_leads = scrape_web()
+                        prog(55, "web_search", f"Internet: found {len(search_leads)} results")
+                    except Exception as exc:
+                        errors.append(f"Internet: {exc}")
+                        prog(55, "web_search", f"Internet failed: {exc}")
         elif needs_web:
             from app.services.scraper_job_store import scraper_job_store as _job_store
 
