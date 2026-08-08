@@ -30,8 +30,12 @@ from app.models.email_outreach import (
 )
 from app.models.lead import Lead, LeadStatus
 from app.models.message import Message
+from app.models.plan_payment import PaymentStatus, PlanPayment
+from app.models.support_chat import SupportMessage, SupportThread
 from app.models.user import User, UserRole
 from app.models.user_api_key import ApiKeyStatus, ApiProvider, UserApiKey
+from app.models.whatsapp_chat import WhatsAppChatMessage, WhatsAppChatThread
+from app.models.whatsapp_web import WhatsAppWebInboundJob
 
 __all__ = [
     "User",
@@ -73,4 +77,11 @@ __all__ = [
     "AgentActivityLog",
     "OutreachNotification",
     "NotificationType",
+    "PlanPayment",
+    "PaymentStatus",
+    "SupportThread",
+    "SupportMessage",
+    "WhatsAppChatThread",
+    "WhatsAppChatMessage",
+    "WhatsAppWebInboundJob",
 ]

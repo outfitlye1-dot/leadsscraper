@@ -50,11 +50,6 @@ class AllInOneScraperService:
         self.rotation = ApiKeyRotationService(db)
         self.groq_service = GroqService(db)
 
-    def _user_has_apify(self, user_id: int) -> bool:
-        from app.models.user_api_key import ApiProvider
-
-        return bool(self.rotation.get_user_tokens(user_id, ApiProvider.apify))
-
     def run(
         self,
         user: User,
@@ -111,12 +106,6 @@ class AllInOneScraperService:
             data.limit if data.scrape_source != ScrapeSourceMode.all else max(data.limit // 2, 10)
         )
 
-        if needs_maps and not self._user_has_apify(user.id):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Apify API key required. Add your own Apify token in Settings → API Keys.",
-            )
-
         # Release SQLite transaction before long network I/O so login/API stay responsive
         try:
             if self.db.in_transaction():
@@ -139,21 +128,20 @@ class AllInOneScraperService:
             maps_loc: str | None = None,
             result_limit: int | None = None,
         ) -> list[dict]:
-            from apify_client import ApifyClient
-            from app.models.user_api_key import ApiProvider
+            from app.services.scraper_job_store import scraper_job_store as _store
 
             mk = maps_kw or keyword
             ml = maps_loc or location
             lim = result_limit if result_limit is not None else per_source_limit
-
-            def run_with_token(token: str) -> list[dict]:
-                client = ApifyClient(token)
-                return self.apify_service._scrape_google_maps(
-                    client, settings.APIFY_ACTOR_ID, mk, ml, lim
-                )
-
-            return self.rotation.execute_with_rotation(
-                user.id, ApiProvider.apify, run_with_token
+            job_control = (lambda: _store.should_abort(job_id)) if job_id else None
+            no_site = data.website_filter == WebsiteFilter.without_website
+            # Local Playwright only — https://github.com/kevmaindev/Googles-Maps-Scraper
+            return self.apify_service.scrape_maps_playwright_local(
+                mk,
+                ml,
+                lim,
+                job_control=job_control,
+                require_no_website=no_site,
             )
 
         def scrape_web() -> list[dict]:
@@ -192,65 +180,130 @@ class AllInOneScraperService:
                 errors.append(f"Meta Ads: {exc}")
                 prog(55, "meta_ads", f"Meta Ads failed: {exc}")
         elif needs_maps and needs_web:
+            from concurrent.futures import wait, FIRST_COMPLETED
+            from app.services.scraper_job_store import scraper_job_store as _job_store
+
+            if job_id and _job_store.is_cancelled(job_id):
+                prog(100, "cancelled", "Stopped")
+                return ScraperStartResponse(success=True, count=0, message="Stopped")
+
             prog(10, "parallel", "Google Maps + Internet + Meta Ads (parallel)...")
             parallel_workers = compute_source_workers(3 if needs_meta else 2)
+            scrape_metrics.set("active_workers", parallel_workers)
+            scrape_metrics.set("queue_size", 3 if needs_meta else 2)
             with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
                 maps_future = executor.submit(scrape_maps)
                 web_future = executor.submit(scrape_web)
                 meta_future = executor.submit(scrape_meta) if needs_meta else None
-                try:
-                    maps_leads = maps_future.result()
-                    prog(30, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
-                except Exception as exc:
-                    errors.append(f"Google Maps: {exc}")
-                    prog(30, "google_maps", f"Google Maps failed: {exc}")
-                try:
-                    search_leads = web_future.result()
-                    prog(45, "web_search", f"Internet: found {len(search_leads)} results")
-                except Exception as exc:
-                    errors.append(f"Internet: {exc}")
-                    prog(45, "web_search", f"Internet failed: {exc}")
+                pending = {maps_future, web_future}
                 if meta_future:
-                    try:
-                        meta_leads = meta_future.result()
-                        prog(55, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
-                    except Exception as exc:
-                        errors.append(f"Meta Ads: {exc}")
-                        prog(55, "meta_ads", f"Meta Ads failed: {exc}")
+                    pending.add(meta_future)
+
+                while pending:
+                    if job_id and _job_store.is_cancelled(job_id):
+                        for fut in pending:
+                            fut.cancel()
+                        prog(100, "cancelled", "Stopped")
+                        return ScraperStartResponse(success=True, count=0, message="Stopped")
+
+                    done, pending = wait(pending, timeout=0.4, return_when=FIRST_COMPLETED)
+                    scrape_metrics.set("queue_size", len(pending))
+                    scrape_metrics.set(
+                        "active_workers",
+                        min(parallel_workers, max(0, len(pending))),
+                    )
+                    for future in done:
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            if future is maps_future:
+                                errors.append(f"Google Maps: {exc}")
+                                prog(30, "google_maps", f"Google Maps failed: {exc}")
+                            elif future is web_future:
+                                errors.append(f"Internet: {exc}")
+                                prog(45, "web_search", f"Internet failed: {exc}")
+                            else:
+                                errors.append(f"Meta Ads: {exc}")
+                                prog(55, "meta_ads", f"Meta Ads failed: {exc}")
+                            continue
+                        if future is maps_future:
+                            maps_leads = result
+                            prog(30, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
+                        elif future is web_future:
+                            search_leads = result
+                            prog(45, "web_search", f"Internet: found {len(search_leads)} results")
+                        else:
+                            meta_leads = result
+                            prog(55, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
+            scrape_metrics.set("active_workers", 0)
+            scrape_metrics.set("queue_size", 0)
         elif needs_maps:
-            prog(10, "google_maps", "Scraping Google Maps via Apify...")
+            prog(10, "google_maps", "Finding local businesses...")
             try:
                 maps_leads = scrape_maps()
-                prog(40, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
+                prog(40, "google_maps", f"Found {len(maps_leads)} businesses with phone")
             except Exception as exc:
                 errors.append(f"Google Maps: {exc}")
-                prog(40, "google_maps", f"Google Maps failed: {exc}")
+                prog(40, "google_maps", "Could not finish business search")
         elif needs_web:
-            if needs_meta:
-                prog(40, "parallel", "Internet + Meta Ads (parallel)...")
-                with ThreadPoolExecutor(max_workers=compute_source_workers(2)) as executor:
-                    web_future = executor.submit(scrape_web)
-                    meta_future = executor.submit(scrape_meta)
-                    try:
-                        search_leads = web_future.result()
-                        prog(50, "web_search", f"Internet: found {len(search_leads)} results")
-                    except Exception as exc:
-                        errors.append(f"Internet: {exc}")
-                        prog(50, "web_search", f"Internet failed: {exc}")
-                    try:
-                        meta_leads = meta_future.result()
-                        prog(55, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
-                    except Exception as exc:
-                        errors.append(f"Meta Ads: {exc}")
-                        prog(55, "meta_ads", f"Meta Ads failed: {exc}")
-            else:
-                prog(45, "web_search", "Internet scraping (search query)...")
+            from app.services.scraper_job_store import scraper_job_store as _job_store
+
+            if job_id and _job_store.is_cancelled(job_id):
+                prog(100, "cancelled", "Stopped")
+                return ScraperStartResponse(success=True, count=0, message="Stopped")
+
+            prog(20, "google_maps", "Finding local businesses...")
+            try:
+                maps_leads = scrape_maps(
+                    maps_keyword or keyword,
+                    maps_location or location,
+                    per_source_limit,
+                )
+                prog(
+                    45,
+                    "google_maps",
+                    f"Found {len(maps_leads)} businesses with phone",
+                )
+            except Exception as exc:
+                errors.append(f"Google Maps: {exc}")
+                prog(45, "google_maps", "Could not finish business search")
+
+            # Supplement with web search only when Maps is thin
+            if (
+                len(maps_leads) < max(2, per_source_limit // 3)
+                and not (job_id and _job_store.is_cancelled(job_id))
+            ):
+                prog(48, "web_search", "Supplementing with Internet search...")
+                web_ex = ThreadPoolExecutor(max_workers=1)
                 try:
-                    search_leads = scrape_web()
-                    prog(55, "web_search", f"Internet: found {len(search_leads)} results")
+                    web_timeout = max(
+                        40.0, float(settings.SCRAPER_INTERNET_MAX_SECONDS or 60.0)
+                    )
+                    web_fut = web_ex.submit(scrape_web)
+                    try:
+                        search_leads = web_fut.result(timeout=web_timeout)
+                        prog(
+                            55,
+                            "web_search",
+                            f"Internet: found {len(search_leads)} results",
+                        )
+                    except TimeoutError:
+                        prog(55, "web_search", f"Internet supplement timed out")
+                        search_leads = []
                 except Exception as exc:
                     errors.append(f"Internet: {exc}")
                     prog(55, "web_search", f"Internet failed: {exc}")
+                finally:
+                    web_ex.shutdown(wait=False, cancel_futures=True)
+
+            if needs_meta:
+                prog(56, "meta_ads", "Searching Meta Ad Library...")
+                try:
+                    meta_leads = scrape_meta()
+                    prog(58, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
+                except Exception as exc:
+                    errors.append(f"Meta Ads: {exc}")
+                    prog(58, "meta_ads", f"Meta Ads failed: {exc}")
 
         if not maps_leads and not search_leads and not meta_leads:
             if errors:
@@ -303,15 +356,17 @@ class AllInOneScraperService:
 
         if data.enrich_contacts:
             def enrich_progress(done: int, total_count: int) -> None:
-                pct = 55 + int(20 * done / max(total_count, 1))
+                # Map enrich into 58→78 so UI doesn't sit frozen at ~60%
+                pct = 58 + int(20 * done / max(total_count, 1))
                 prog(
-                    pct,
+                    min(78, pct),
                     "enrich",
-                    f"Enriching contacts {done}/{total_count} (parallel)...",
+                    f"Enriching contacts {done}/{total_count}...",
                 )
 
+            prog(58, "enrich", f"Enriching contacts (0/{len(leads_data)})...")
             leads_data = self.enrichment_service.enrich_leads_batch(
-                leads_data, on_progress=enrich_progress
+                leads_data, on_progress=enrich_progress, metrics=scrape_metrics
             )
         else:
             leads_data = [
@@ -323,60 +378,68 @@ class AllInOneScraperService:
         if not background:
             prog(78, "filter", "Applying website filter...")
             before_website = len(leads_data)
-            leads_data = apply_website_filter(leads_data, data.website_filter)
-            filtered_website = before_website - len(leads_data)
+            preferred = apply_website_filter(leads_data, data.website_filter)
+            filtered_website = before_website - len(preferred)
 
+            # Soft-fill: "without website" is rare on Maps — top up with phone leads
             if (
-                not leads_data
-                and before_website > 0
-                and not maps_leads
-                and data.website_filter == WebsiteFilter.without_website
-                and self._user_has_apify(user.id)
+                data.website_filter == WebsiteFilter.without_website
+                and len(preferred) < max(3, min(int(data.limit or 10), 8))
+                and needs_maps
             ):
-                maps_limit = min(max(data.limit * 3, 30), 500)
                 prog(
-                    62,
+                    80,
                     "google_maps",
-                    "Internet results had websites — scanning Google Maps for businesses without sites...",
+                    "Few no-website businesses — topping up with phone leads…",
                 )
                 try:
-                    maps_leads = scrape_maps(maps_keyword, maps_location, maps_limit)
-                    if maps_leads:
-                        leads_data = dedupe_leads(maps_leads)[: data.limit]
-                        leads_discovered = max(leads_discovered, len(leads_data))
-                        if data.enrich_contacts:
+                    from app.services.scraper_job_store import scraper_job_store as _job_store
 
-                            def maps_enrich_progress(done: int, total_count: int) -> None:
-                                pct = 80 + int(8 * done / max(total_count, 1))
-                                prog(
-                                    pct,
-                                    "enrich",
-                                    f"Enriching Maps contacts {done}/{total_count}...",
-                                )
-
-                            leads_data = self.enrichment_service.enrich_leads_batch(
-                                leads_data, on_progress=maps_enrich_progress
-                            )
-                        else:
-                            leads_data = [
-                                sanitize_lead_contacts(lead, search_location=location or None)
-                                for lead in leads_data
-                            ]
-                        leads_data = [apply_quality_to_lead(lead) for lead in leads_data]
-                        before_website = len(leads_data)
-                        leads_data = apply_website_filter(leads_data, data.website_filter)
-                        filtered_website += before_website - len(leads_data)
-                        maps_count, search_count, meta_count = self.apify_service.count_by_source(
-                            leads_data
+                    job_control = (
+                        (lambda: _job_store.should_abort(job_id)) if job_id else None
+                    )
+                    topup = self.apify_service.scrape_maps_playwright_local(
+                        maps_keyword or keyword,
+                        maps_location or location,
+                        max(int(data.limit or 10), 12),
+                        job_control=job_control,
+                        require_no_website=False,
+                    )
+                    if data.enrich_contacts:
+                        topup = self.enrichment_service.enrich_leads_batch(topup)
+                    else:
+                        topup = [
+                            sanitize_lead_contacts(lead, search_location=location or None)
+                            for lead in topup
+                        ]
+                    merged = dedupe_leads(list(preferred) + list(topup))
+                    no_site = [
+                        lead for lead in merged if not has_real_website(lead.get("website"))
+                    ]
+                    with_site = [
+                        lead
+                        for lead in merged
+                        if has_real_website(lead.get("website"))
+                        and (
+                            (lead.get("phone") and str(lead.get("phone")).strip())
+                            or (lead.get("email") and is_valid_email(lead.get("email")))
                         )
-                        prog(
-                            65,
-                            "google_maps",
-                            f"Google Maps: {len(leads_data)} business(es) without website",
-                        )
+                    ]
+                    leads_data = (no_site + with_site)[: data.limit]
+                    leads_discovered = max(leads_discovered, len(merged))
+                    filtered_website = max(0, before_website - len(no_site))
+                    log(
+                        "info",
+                        "filter",
+                        f"Kept {len(no_site)} without website + "
+                        f"{max(0, len(leads_data) - len(no_site))} phone fill",
+                    )
                 except Exception as exc:
-                    errors.append(f"Google Maps fallback: {exc}")
-                    prog(65, "google_maps", f"Google Maps fallback failed: {exc}")
+                    leads_data = preferred
+                    errors.append(f"Maps top-up: {exc}")
+                    log("warn", "filter", f"Top-up failed: {exc}")
+            else:
+                leads_data = preferred
         else:
             prog(78, "filter", "Background mode — keeping all discovered leads")
 
@@ -400,6 +463,22 @@ class AllInOneScraperService:
             )
 
         leads_data = [apply_quality_to_lead(lead) for lead in leads_data]
+
+        # Without-website mode: prefer contactable leads (phone/email) — that's the product goal
+        if data.website_filter == WebsiteFilter.without_website:
+            with_contact = [
+                lead
+                for lead in leads_data
+                if (lead.get("phone") and str(lead.get("phone")).strip())
+                or (lead.get("email") and is_valid_email(lead.get("email")))
+            ]
+            if with_contact:
+                leads_data = with_contact
+                log(
+                    "info",
+                    "filter",
+                    f"Kept {len(leads_data)} without-website lead(s) that have phone/email",
+                )
 
         before_verified = len(leads_data)
         filtered_unverified = 0

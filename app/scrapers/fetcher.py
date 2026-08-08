@@ -37,7 +37,7 @@ class PageFetcher:
             if use_playwright is not None
             else settings.SCRAPER_ENABLE_PLAYWRIGHT
         )
-        self.retries = max(settings.SCRAPER_FETCH_RETRIES, 2)
+        self.retries = max(1, settings.SCRAPER_FETCH_RETRIES)
         self.metrics = metrics
         self.job_control = job_control
         self._local = threading.local()
@@ -72,12 +72,23 @@ class PageFetcher:
             return None, url
 
         settings = get_settings()
-        if settings.SCRAPER_RESPECT_ROBOTS and not is_allowed(url):
+        respect_robots = settings.SCRAPER_RESPECT_ROBOTS and not settings.SCRAPER_FAST_MODE
+        if respect_robots and not is_allowed(url):
             log_fetch_failure(self.metrics, url, "blocked by robots.txt")
             return None, url
 
-        random_delay()
-        wait_for_domain(url)
+        if self._aborted():
+            return None, url
+        if not settings.SCRAPER_FAST_MODE:
+            random_delay()
+            if self._aborted():
+                return None, url
+            wait_for_domain(url)
+            if self._aborted():
+                return None, url
+        else:
+            # Fast mode: no per-domain sleep — keep wall-clock tight
+            pass
         url = self._normalize_url(url)
         session = self._get_session()
         session.headers["User-Agent"] = get_random_user_agent()
@@ -87,6 +98,12 @@ class PageFetcher:
         status_code: int | None = None
         proxy = get_next_proxy()
         proxies = proxy_dict_for_requests(proxy)
+        # Split connect/read so DNS/connect stalls cannot exceed the job budget
+        req_timeout: float | tuple[float, float]
+        if settings.SCRAPER_FAST_MODE:
+            req_timeout = (min(2.5, float(self.timeout)), min(4.0, float(self.timeout) + 1.0))
+        else:
+            req_timeout = self.timeout
 
         for attempt in range(1, self.retries + 1):
             if self._aborted():
@@ -95,7 +112,7 @@ class PageFetcher:
                 self._track_request()
                 response = session.get(
                     url,
-                    timeout=self.timeout,
+                    timeout=req_timeout,
                     allow_redirects=True,
                     proxies=proxies,
                 )

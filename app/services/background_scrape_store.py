@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 HEARTBEAT_TTL_SECONDS = 300
-BACKGROUND_ROUND_SECONDS = 50
+BACKGROUND_ROUND_SECONDS = 120
 MAX_BACKGROUND_LOGS = 250
 
 

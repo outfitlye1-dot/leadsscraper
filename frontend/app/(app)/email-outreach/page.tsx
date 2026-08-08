@@ -171,8 +171,8 @@ export default function EmailOutreachPage() {
             <p className="text-sm">
               Connect Gmail in settings before starting the AI Agent.
             </p>
-            <Link href="/settings/email-outreach">
-              <Button size="sm">Open outreach settings</Button>
+            <Link href="/email-outreach/accounts">
+              <Button size="sm">Connect email account</Button>
             </Link>
           </CardContent>
         </Card>
@@ -237,14 +237,14 @@ export default function EmailOutreachPage() {
       )}
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Link href="/settings/email-outreach">
+        <Link href="/email-outreach/accounts">
           <Card className="h-full transition-colors hover:bg-muted/30">
             <CardContent className="flex items-center gap-4 py-5">
               <IconBox icon={Settings2} tone="slate" size="md" />
               <div>
-                <p className="font-medium">Outreach settings</p>
+                <p className="font-medium">Email accounts</p>
                 <p className="text-xs text-muted-foreground">
-                  Limits, auto-send, Gmail, working hours — auto-applies here
+                  Connect Gmail or SMTP — limits are set by your admin
                 </p>
               </div>
             </CardContent>

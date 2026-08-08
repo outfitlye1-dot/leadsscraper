@@ -26,33 +26,14 @@ MAPS_NO_WEBSITE = [
         "email": None,
         "website": None,
         "country": "United Kingdom",
-        "source": "apify",
+        "source": "playwright_maps",
         "status": LeadStatus.new,
     }
 ]
 
 
-@patch("app.services.all_in_one_scraper_service.get_settings")
-@patch("app.services.all_in_one_scraper_service.EnrichmentService")
-@patch("app.services.all_in_one_scraper_service.ApifyService")
-def test_internet_falls_back_to_maps_when_website_filter_removes_leads(
-    mock_apify_class, mock_enrich_class, mock_settings, db_session
-):
-    mock_settings.return_value.APIFY_ACTOR_ID = "actor-id"
-
-    mock_apify = MagicMock()
-    mock_apify._normalize_location.side_effect = lambda x: x
-    mock_apify._scrape_google_maps.return_value = MAPS_NO_WEBSITE
-    mock_apify.web_search_service.search_leads.return_value = WEB_LEADS_WITH_SITES
-    mock_apify.count_by_source.return_value = (1, 0, 0)
-    mock_apify_class.return_value = mock_apify
-
-    mock_enrich = MagicMock()
-    mock_enrich.enrich_leads_batch.side_effect = lambda leads, on_progress=None: leads
-    mock_enrich_class.return_value = mock_enrich
-
+def _seed_users(db_session):
     from app.models.user import User, UserRole
-    from app.models.user_api_key import ApiKeyStatus, ApiProvider, UserApiKey
 
     user = User(
         id=1,
@@ -62,25 +43,38 @@ def test_internet_falls_back_to_maps_when_website_filter_removes_leads(
         role=UserRole.user,
     )
     db_session.add(user)
-    db_session.add(
-        UserApiKey(
-            user_id=1,
-            provider=ApiProvider.apify,
-            label="Test Apify",
-            api_key="apify_api_test_key_12345",
-            priority=0,
-            status=ApiKeyStatus.active,
-        )
-    )
     db_session.commit()
+    return user
 
+
+@patch("app.services.all_in_one_scraper_service.get_settings")
+@patch("app.services.all_in_one_scraper_service.EnrichmentService")
+@patch("app.services.all_in_one_scraper_service.ApifyService")
+def test_internet_uses_playwright_maps_not_silent_all_fallback(
+    mock_apify_class, mock_enrich_class, mock_settings, db_session
+):
+    """Internet primary is Playwright Maps; website filter must not re-trigger All-mode Maps fallback."""
+    mock_settings.return_value.SCRAPER_INTERNET_MAX_SECONDS = 40.0
+
+    mock_apify = MagicMock()
+    mock_apify._normalize_location.side_effect = lambda x: x
+    mock_apify.scrape_maps_playwright_local.return_value = MAPS_NO_WEBSITE
+    mock_apify.web_search_service.search_leads.return_value = WEB_LEADS_WITH_SITES
+    mock_apify.count_by_source.return_value = (1, 0, 0)
+    mock_apify_class.return_value = mock_apify
+
+    mock_enrich = MagicMock()
+    mock_enrich.enrich_leads_batch.side_effect = lambda leads, on_progress=None: leads
+    mock_enrich_class.return_value = mock_enrich
+
+    user = _seed_users(db_session)
     service = AllInOneScraperService(db_session)
     result = service.run(
         user,
         ScraperStartRequest(
             keyword="restaurant",
             location="London, United Kingdom",
-            search_query="restaurant London contact email",
+            search_query="restaurant London",
             limit=10,
             enrich_contacts=False,
             only_verified_contacts=False,
@@ -92,6 +86,49 @@ def test_internet_falls_back_to_maps_when_website_filter_removes_leads(
     )
 
     assert result.success is True
+    mock_apify.scrape_maps_playwright_local.assert_called()
+    # Primary Maps call only — website filter must not invoke a second All-source Maps pass
+    assert mock_apify.scrape_maps_playwright_local.call_count == 1
+
+
+@patch("app.services.all_in_one_scraper_service.get_settings")
+@patch("app.services.all_in_one_scraper_service.EnrichmentService")
+@patch("app.services.all_in_one_scraper_service.ApifyService")
+def test_all_source_may_fallback_to_maps_when_website_filter_removes_leads(
+    mock_apify_class, mock_enrich_class, mock_settings, db_session
+):
+    mock_settings.return_value.SCRAPER_PLAYWRIGHT_MAPS_MAX_SECONDS = 90.0
+
+    mock_apify = MagicMock()
+    mock_apify._normalize_location.side_effect = lambda x: x
+    # First parallel Maps call returns empty; website filter fallback rescrapes Maps
+    mock_apify.scrape_maps_playwright_local.side_effect = [[], MAPS_NO_WEBSITE]
+    mock_apify.web_search_service.search_leads.return_value = WEB_LEADS_WITH_SITES
+    mock_apify.count_by_source.side_effect = [(0, 1, 0), (1, 0, 0)]
+    mock_apify_class.return_value = mock_apify
+
+    mock_enrich = MagicMock()
+    mock_enrich.enrich_leads_batch.side_effect = lambda leads, on_progress=None: leads
+    mock_enrich_class.return_value = mock_enrich
+
+    user = _seed_users(db_session)
+    service = AllInOneScraperService(db_session)
+    result = service.run(
+        user,
+        ScraperStartRequest(
+            keyword="restaurant",
+            location="London, United Kingdom",
+            search_query="restaurant London",
+            limit=10,
+            enrich_contacts=False,
+            only_verified_contacts=False,
+            auto_generate_whatsapp=False,
+            website_filter=WebsiteFilter.without_website,
+            scrape_source=ScrapeSourceMode.all,
+            include_meta_ads=False,
+        ),
+    )
+
+    assert result.success is True
     assert result.count == 1
-    assert result.filtered_website >= 1
-    mock_apify._scrape_google_maps.assert_called_once()
+    assert mock_apify.scrape_maps_playwright_local.call_count >= 2

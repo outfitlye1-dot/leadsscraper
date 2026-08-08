@@ -70,8 +70,9 @@ def test_map_web_search_result():
     assert lead.get("category") == "Web Design Agency"
 
 
-def test_map_web_search_result_discovery_only_requires_contact():
-    no_contact = map_web_search_result(
+def test_map_web_search_result_discovery_only_accepts_real_website():
+    """Discovery-only keeps real business websites even without phone/email yet."""
+    lead = map_web_search_result(
         {
             "title": "Acme Web Design",
             "url": "https://acmeweb.com",
@@ -80,7 +81,9 @@ def test_map_web_search_result_discovery_only_requires_contact():
         "Karachi, Pakistan",
         discovery_only=True,
     )
-    assert no_contact is None
+    assert lead is not None
+    assert lead.get("website")
+    assert lead.get("company_name") == "Acme Web Design"
 
     with_contact = map_web_search_result(
         {

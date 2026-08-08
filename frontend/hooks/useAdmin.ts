@@ -8,6 +8,7 @@ import type {
   AdminSystemInfo,
   AdminUserDetail,
   AdminUserList,
+  EmailOutreachSettings,
 } from "@/lib/types";
 
 export function useAdminDashboard() {
@@ -82,6 +83,31 @@ export function useAdminOutreachSummary() {
   });
 }
 
+export function useAdminOutreachSettings() {
+  return useQuery({
+    queryKey: ["admin-outreach-settings"],
+    queryFn: async () => {
+      const { data } = await api.get<EmailOutreachSettings>("/admin/outreach/settings");
+      return data;
+    },
+  });
+}
+
+export function useUpdateAdminOutreachSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: Partial<EmailOutreachSettings>) => {
+      const { data } = await api.put<EmailOutreachSettings>("/admin/outreach/settings", payload);
+      return data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-outreach-settings"] });
+      qc.invalidateQueries({ queryKey: ["email-outreach-settings"] });
+      qc.invalidateQueries({ queryKey: ["email-outreach-dashboard"] });
+    },
+  });
+}
+
 export function useAdminSystem() {
   return useQuery({
     queryKey: ["admin-system"],
@@ -89,6 +115,7 @@ export function useAdminSystem() {
       const { data } = await api.get<AdminSystemInfo>("/admin/system");
       return data;
     },
+    refetchInterval: 15000,
   });
 }
 
@@ -124,6 +151,11 @@ export function useUpdateAdminUser() {
         email?: string;
         password?: string;
         role?: string;
+        api_access?: boolean;
+        plan?: "free" | "paid";
+        daily_token_limit?: number;
+        own_api_keys_enabled?: boolean;
+        reset_tokens_used_today?: boolean;
       };
     }) => {
       const { data } = await api.patch(`/admin/users/${userId}`, body);

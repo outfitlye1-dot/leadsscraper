@@ -150,7 +150,7 @@ def bulk_save_leads(
 @router.post(
     "/cleanup-no-contact",
     status_code=status.HTTP_200_OK,
-    summary="Delete inbox leads without a phone number",
+    summary="Keep phone/no-website inbox leads; delete no-phone and with-website leads",
 )
 def cleanup_leads_without_contact(
     current_user: User = Depends(get_current_user),

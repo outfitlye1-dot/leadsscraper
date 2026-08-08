@@ -25,6 +25,7 @@ from app.services.email_outreach.generation import EmailGenerationService
 from app.services.email_outreach.job_queue import OutreachJobQueue
 from app.utils.datetime_utils import as_utc
 from app.services.email_outreach.notifications import NotificationService
+from app.services.email_outreach.transport import EmailTransportError
 from app.services.email_outreach.verification import can_send_to_email, verify_outreach_email
 
 STANDING_CAMPAIGN_NAME = "AI Agent — Auto Outreach"
@@ -548,6 +549,92 @@ class AiOutreachAgent:
         )
         self.db.commit()
         return True
+
+    def manual_send_to_lead(self, user: User, lead_id: int) -> dict:
+        """Generate an AI outreach email for one lead and send it immediately."""
+        account = self.repo.get_default_account(user.id)
+        if not account or account.status != EmailAccountStatus.connected:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Connect Gmail first in Email Outreach → Email accounts.",
+            )
+
+        lead = self.lead_repo.get_by_id(user.id, lead_id)
+        if not lead:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found")
+        if not lead.email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This lead has no email address.",
+            )
+
+        campaign = self.get_or_create_standing_campaign(user.id)
+        existing = next(
+            (
+                e
+                for e in self.repo.list_outreach_emails(user.id, campaign_id=campaign.id, limit=1000)
+                if e.lead_id == lead.id and e.follow_up_step == 0
+            ),
+            None,
+        )
+
+        if existing and existing.status in (
+            OutreachEmailStatus.sent,
+            OutreachEmailStatus.delivered,
+            OutreachEmailStatus.opened,
+            OutreachEmailStatus.replied,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Outreach email was already sent to this lead.",
+            )
+
+        if not existing:
+            created = self.process_single_lead(user.id, lead, campaign.id, pilot=True)
+            if not created:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Could not generate outreach email — email may be invalid.",
+                )
+            existing = next(
+                (
+                    e
+                    for e in self.repo.list_outreach_emails(user.id, campaign_id=campaign.id, limit=1000)
+                    if e.lead_id == lead.id and e.follow_up_step == 0
+                ),
+                None,
+            )
+
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create outreach email.",
+            )
+
+        try:
+            from app.services.email_outreach.send import EmailSendService
+
+            send_status = EmailSendService(self.db).send_outreach_email(
+                user.id, existing.id, pilot=True
+            )
+        except EmailTransportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            ) from exc
+
+        self.db.refresh(existing)
+        status_value = (
+            send_status.value if hasattr(send_status, "value") else str(send_status)
+        )
+        return {
+            "message": "AI email generated and sent",
+            "subject": existing.subject,
+            "to_email": existing.to_email,
+            "status": status_value,
+            "lead_id": lead.id,
+            "company_name": lead.company_name,
+        }
 
     def schedule_followups_for_lead(
         self, user_id: int, lead_id: int, campaign_id: int, initial_email

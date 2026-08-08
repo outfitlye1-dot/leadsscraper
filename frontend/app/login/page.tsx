@@ -17,6 +17,8 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
+import { GoogleAuthHandler } from "@/components/GoogleAuthHandler";
+import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 
 const passwordSchema = z.object({
   email: z.string().email("Invalid email"),
@@ -42,6 +44,7 @@ export default function LoginPage() {
   const router = useRouter();
   const [mode, setMode] = useState<LoginMode>("password");
   const [email, setEmail] = useState("");
+  const [otpDevMode, setOtpDevMode] = useState(false);
 
   const passwordForm = useForm<PasswordFormData>({ resolver: zodResolver(passwordSchema) });
   const otpEmailForm = useForm<OtpEmailFormData>({ resolver: zodResolver(otpEmailSchema) });
@@ -73,6 +76,7 @@ export default function LoginPage() {
     try {
       const result = await sendOtp(data.email, "login");
       setEmail(data.email);
+      setOtpDevMode(result.message.toLowerCase().includes("dev mode"));
       setMode("otp-code");
       toast.success(result.message);
     } catch (error) {
@@ -94,6 +98,7 @@ export default function LoginPage() {
   const onResend = async () => {
     try {
       const result = await sendOtp(email, "login");
+      setOtpDevMode(result.message.toLowerCase().includes("dev mode"));
       toast.success(result.message);
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Please wait before requesting another code"));
@@ -102,6 +107,7 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
+      <GoogleAuthHandler />
       <div className="w-full max-w-md space-y-8">
         <div className="text-center">
           <div className="mx-auto mb-5 flex h-11 w-11 items-center justify-center rounded-xl border border-border/80 bg-foreground">
@@ -122,6 +128,18 @@ export default function LoginPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            <div className="space-y-5">
+              <GoogleSignInButton />
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border/60" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-card px-2 text-muted-foreground">or</span>
+                </div>
+              </div>
+            </div>
+
             {mode === "password" && (
               <form onSubmit={passwordForm.handleSubmit(onPasswordLogin)} className="space-y-5">
                 <div className="space-y-2">
@@ -204,6 +222,15 @@ export default function LoginPage() {
 
             {mode === "otp-code" && (
               <form onSubmit={otpForm.handleSubmit(onVerifyOtp)} className="space-y-5">
+                {otpDevMode ? (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
+                    Email is not configured yet. The code is printed in the backend terminal only
+                    (not sent to Gmail). Add a Gmail <strong>App Password</strong> to{" "}
+                    <code className="rounded bg-background/60 px-1">SMTP_PASSWORD</code> in{" "}
+                    <code className="rounded bg-background/60 px-1">.env</code> — OAuth client
+                    secret does not send OTP emails.
+                  </div>
+                ) : null}
                 <div className="space-y-2">
                   <Label htmlFor="code">Verification code</Label>
                   <Input

@@ -149,7 +149,7 @@ def test_suggest_scrape_from_brain(mock_suggest_groq_class, client, groq_auth_he
     response = client.post(
         "/api/ai/suggest-scrape",
         headers=groq_auth_headers,
-        json={"scrape_source": "all"},
+        json={"scrape_source": "all", "randomize": False},
     )
     assert response.status_code == 200
     data = response.json()

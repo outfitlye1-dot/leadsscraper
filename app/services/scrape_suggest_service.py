@@ -4,6 +4,7 @@ from app.models.user import User
 from app.repositories.brain_repository import BrainRepository
 from app.schemas.message import ScrapeSuggestRequest, ScrapeSuggestResponse
 from app.services.groq_service import GroqService
+from app.utils.auto_query_rotation import pick_fresh_brain_suggestion
 from app.utils.scrape_suggest import location_from_brain_notes, suggest_scrape_from_profile_rules
 
 _GENERIC_PROFILE: dict = {
@@ -94,6 +95,25 @@ class ScrapeSuggestService:
             )
         return ScrapeSuggestResponse(**result)
 
+    def _maybe_randomize(
+        self,
+        result: dict,
+        *,
+        profile: dict | None,
+        scrape_source: str,
+        data: ScrapeSuggestRequest,
+    ) -> dict:
+        if not data.randomize:
+            return result
+        return pick_fresh_brain_suggestion(
+            result,
+            profile=profile,
+            scrape_source=scrape_source,
+            current_keyword=data.current_keyword,
+            current_search_query=data.current_search_query,
+            location=data.location,
+        )
+
     def suggest(self, user: User, data: ScrapeSuggestRequest) -> ScrapeSuggestResponse:
         self.groq_service.user_id = user.id
         scrape_source = self._normalize_scrape_source(data.scrape_source)
@@ -102,12 +122,29 @@ class ScrapeSuggestService:
         if not profile:
             result = self._rule_based_suggest(_GENERIC_PROFILE, scrape_source)
             result["has_profile"] = False
+            result = self._maybe_randomize(
+                result, profile=None, scrape_source=scrape_source, data=data
+            )
             return self._finalize_suggest(result, None)
 
-        if not self.groq_service._has_groq_access():
-            result = self._rule_based_suggest(profile, scrape_source)
-            return self._finalize_suggest(result, profile)
+        # Prefer AI, but never fail the brain button — fall back to rules on quota/API errors
+        result: dict | None = None
+        if self.groq_service._has_groq_access():
+            try:
+                result = self.groq_service.suggest_scrape_from_profile(
+                    profile,
+                    scrape_source,
+                    website_preference=data.website_preference or "without_website",
+                )
+                result = _strip_ai_locations(result)
+            except Exception:
+                # 402 token limit, missing key, Groq outage, bad JSON — keep scraping usable
+                result = None
 
-        result = self.groq_service.suggest_scrape_from_profile(profile, scrape_source)
-        result = _strip_ai_locations(result)
+        if result is None:
+            result = self._rule_based_suggest(profile, scrape_source)
+
+        result = self._maybe_randomize(
+            result, profile=profile, scrape_source=scrape_source, data=data
+        )
         return self._finalize_suggest(result, profile)

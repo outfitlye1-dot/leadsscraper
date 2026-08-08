@@ -96,25 +96,18 @@ export default function AIPage() {
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium">CV required for AI messages</p>
               <p className="text-xs text-muted-foreground">
-                Upload your CV or configure{" "}
+                Upload your CV on{" "}
                 <Link href="/brain" className="text-primary hover:underline">
-                  AI Brain
+                  CV & Brain
                 </Link>{" "}
                 for personalized outreach.
               </p>
             </div>
-            <div className="flex gap-2">
-              <Link href="/cv">
-                <Button size="sm" variant="outline">
-                  Upload CV
-                </Button>
-              </Link>
-              <Link href="/brain">
-                <Button size="sm" variant="outline">
-                  AI Brain
-                </Button>
-              </Link>
-            </div>
+            <Link href="/brain#cv-upload">
+              <Button size="sm" variant="outline">
+                Open CV & Brain
+              </Button>
+            </Link>
           </CardContent>
         </Card>
       )}

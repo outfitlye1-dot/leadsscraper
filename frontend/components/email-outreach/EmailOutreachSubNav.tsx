@@ -2,17 +2,24 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bot, Send, Settings2 } from "lucide-react";
+import { Bot, Mail, Send, Settings2 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 
-const tabs = [
+const baseTabs = [
   { href: "/email-outreach", label: "AI Agent", icon: Bot, exact: true },
   { href: "/email-outreach/sent", label: "Sent messages", icon: Send },
-  { href: "/settings/email-outreach", label: "Settings", icon: Settings2 },
+  { href: "/email-outreach/accounts", label: "Email accounts", icon: Mail },
 ];
 
 export function EmailOutreachSubNav() {
   const pathname = usePathname();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
+  const tabs = isAdmin
+    ? [...baseTabs, { href: "/admin/outreach", label: "Platform settings", icon: Settings2 }]
+    : baseTabs;
 
   return (
     <nav className="flex flex-wrap gap-2 border-b border-border/60 pb-4">

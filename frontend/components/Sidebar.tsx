@@ -2,15 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
   Bookmark,
   Bot,
   Brain,
-  FileUp,
   LayoutDashboard,
   Megaphone,
   MessageSquare,
+  MessageCircle,
   Mail,
   Search,
   Settings,
@@ -22,20 +23,113 @@ import { cn } from "@/lib/utils";
 import { useSidebar } from "@/contexts/SidebarContext";
 import { useAuthStore } from "@/store/authStore";
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/leads", label: "Leads", icon: Users },
-  { href: "/leads/saved", label: "Saved", icon: Bookmark },
-  { href: "/scraper", label: "Scraper", icon: Search },
-  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
-  { href: "/email-outreach", label: "Email Outreach", icon: Mail },
-  { href: "/messages", label: "Messages", icon: MessageSquare },
-  { href: "/ai", label: "AI Generator", icon: Bot },
-  { href: "/brain", label: "AI Brain", icon: Brain },
-  { href: "/cv", label: "CV Upload", icon: FileUp },
-  { href: "/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/settings", label: "Settings", icon: Settings },
+type NavItem = {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+};
+
+type NavSection = {
+  id: string;
+  label: string | null;
+  items: NavItem[];
+};
+
+const navSections: NavSection[] = [
+  {
+    id: "main",
+    label: "Main",
+    items: [
+      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/scraper", label: "Scraper", icon: Search },
+      { href: "/leads", label: "Leads", icon: Users },
+      { href: "/leads/saved", label: "Saved", icon: Bookmark },
+    ],
+  },
+  {
+    id: "outreach",
+    label: "Outreach",
+    items: [
+      { href: "/campaigns", label: "Campaigns", icon: Megaphone },
+      { href: "/email-outreach", label: "Email Outreach", icon: Mail },
+      { href: "/messages", label: "WhatsApp", icon: MessageSquare },
+      { href: "/chat", label: "Support Chat", icon: MessageCircle },
+    ],
+  },
+  {
+    id: "ai",
+    label: "AI",
+    items: [
+      { href: "/ai", label: "AI Generator", icon: Bot },
+      { href: "/brain", label: "CV & Brain", icon: Brain },
+    ],
+  },
+  {
+    id: "account",
+    label: "Account",
+    items: [
+      { href: "/analytics", label: "Analytics", icon: BarChart3 },
+      { href: "/settings", label: "Settings", icon: Settings },
+    ],
+  },
 ];
+
+function isNavActive(href: string, pathname: string): boolean {
+  if (href === "/leads") {
+    return pathname === "/leads" || /^\/leads\/\d+(\/|$)/.test(pathname);
+  }
+  if (href === "/leads/saved") {
+    return pathname === "/leads/saved" || pathname.startsWith("/leads/saved/");
+  }
+  if (href === "/chat") {
+    return pathname === href || pathname.startsWith(`${href}/`);
+  }
+  if (href === "/settings") {
+    return pathname === "/settings" || pathname.startsWith("/settings/");
+  }
+  if (href === "/admin") {
+    return pathname === "/admin" || pathname.startsWith("/admin/");
+  }
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function NavLink({
+  item,
+  pathname,
+  isCollapsed,
+  isMobile,
+  onNavigate,
+}: {
+  item: NavItem;
+  pathname: string;
+  isCollapsed: boolean;
+  isMobile: boolean;
+  onNavigate?: () => void;
+}) {
+  const Icon = item.icon;
+  const isActive = isNavActive(item.href, pathname);
+  return (
+    <Link
+      href={item.href}
+      onClick={onNavigate}
+      title={isCollapsed ? item.label : undefined}
+      className={cn(
+        "flex items-center gap-3 rounded-xl transition-colors",
+        isMobile ? "px-4 py-3.5 text-[15px] leading-snug" : "rounded-lg px-3 py-2.5 text-sm",
+        isCollapsed && "justify-center px-2",
+        isActive
+          ? "liquid-glass-btn bg-foreground/90 text-background shadow-sm"
+          : "font-medium text-muted-foreground hover:bg-muted/45 hover:text-foreground"
+      )}
+    >
+      <Icon
+        className={cn("shrink-0", isMobile ? "h-5 w-5" : "h-4 w-4")}
+        strokeWidth={isActive ? 2.25 : 2}
+      />
+      {!isCollapsed && <span className="truncate">{item.label}</span>}
+    </Link>
+  );
+}
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -43,10 +137,6 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const isAdmin = useAuthStore((s) => s.user?.role === "admin");
   const isMobile = Boolean(onNavigate);
   const isCollapsed = collapsed && !isMobile;
-
-  const adminItems = isAdmin
-    ? [{ href: "/admin", label: "Admin Panel", icon: Shield }]
-    : [];
 
   return (
     <aside
@@ -84,70 +174,47 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       </div>
 
-      <nav className={cn("flex-1 overflow-y-auto", isMobile ? "space-y-1.5 p-4" : "space-y-0.5 p-3")}>
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive =
-            item.href === "/leads"
-              ? pathname === "/leads"
-              : pathname === item.href || pathname.startsWith(`${item.href}/`);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={onNavigate}
-              title={isCollapsed ? item.label : undefined}
-              className={cn(
-                "flex items-center gap-3 rounded-xl transition-colors",
-                isMobile ? "px-4 py-3.5 text-[15px] leading-snug" : "rounded-lg px-3 py-2.5 text-sm",
-                isCollapsed && "justify-center px-2",
-                isActive
-                  ? "liquid-glass-btn bg-foreground/90 text-background shadow-sm"
-                  : "font-medium text-muted-foreground hover:bg-muted/45 hover:text-foreground"
-              )}
-            >
-              <Icon
-                className={cn("shrink-0", isMobile ? "h-5 w-5" : "h-4 w-4")}
-                strokeWidth={isActive ? 2.25 : 2}
+      <nav className={cn("flex-1 overflow-y-auto", isMobile ? "space-y-4 p-4" : "space-y-3 p-3")}>
+        {navSections.map((section) => (
+          <div key={section.id} className={cn(isMobile ? "space-y-1.5" : "space-y-0.5")}>
+            {section.label && !isCollapsed ? (
+              <p
+                className={cn(
+                  "px-3 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground",
+                  section.id === "main" ? "pb-1" : "pt-1 pb-1"
+                )}
+              >
+                {section.label}
+              </p>
+            ) : null}
+            {section.items.map((item) => (
+              <NavLink
+                key={item.href}
+                item={item}
+                pathname={pathname}
+                isCollapsed={isCollapsed}
+                isMobile={isMobile}
+                onNavigate={onNavigate}
               />
-              {!isCollapsed && <span className="truncate">{item.label}</span>}
-            </Link>
-          );
-        })}
-        {adminItems.length > 0 ? (
-          <>
+            ))}
+          </div>
+        ))}
+
+        {isAdmin ? (
+          <div className={cn(isMobile ? "space-y-1.5" : "space-y-0.5")}>
             {!isCollapsed ? (
-              <p className="px-3 pt-4 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              <p className="px-3 pt-1 pb-1 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
                 Admin
               </p>
             ) : null}
-            {adminItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={onNavigate}
-                  title={isCollapsed ? item.label : undefined}
-                  className={cn(
-                    "flex items-center gap-3 rounded-xl transition-colors",
-                    isMobile ? "px-4 py-3.5 text-[15px] leading-snug" : "rounded-lg px-3 py-2.5 text-sm",
-                    isCollapsed && "justify-center px-2",
-                    isActive
-                      ? "liquid-glass-btn bg-foreground/90 text-background shadow-sm"
-                      : "font-medium text-muted-foreground hover:bg-muted/45 hover:text-foreground"
-                  )}
-                >
-                  <Icon
-                    className={cn("shrink-0", isMobile ? "h-5 w-5" : "h-4 w-4")}
-                    strokeWidth={isActive ? 2.25 : 2}
-                  />
-                  {!isCollapsed && <span className="truncate">{item.label}</span>}
-                </Link>
-              );
-            })}
-          </>
+            <NavLink
+              item={{ href: "/admin", label: "Admin Panel", icon: Shield }}
+              pathname={pathname}
+              isCollapsed={isCollapsed}
+              isMobile={isMobile}
+              onNavigate={onNavigate}
+            />
+          </div>
         ) : null}
       </nav>
     </aside>

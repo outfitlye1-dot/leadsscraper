@@ -5,11 +5,14 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatDate(date: string) {
+export function formatDate(date: string | null | undefined) {
+  if (!date) return "—";
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return "—";
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
-  }).format(new Date(date));
+  }).format(parsed);
 }
 
 export function capitalize(str: string) {
@@ -46,5 +49,12 @@ export function formatApiError(err: unknown, fallback = "Something went wrong"):
   const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data
     ?.detail;
   const formatted = formatApiDetail(detail);
-  return formatted || fallback;
+  if (formatted) return formatted;
+  if (typeof err === "object" && err && "message" in err) {
+    const msg = String((err as { message: unknown }).message || "");
+    if (msg && !/^request failed with status code/i.test(msg)) {
+      return msg;
+    }
+  }
+  return fallback;
 }

@@ -14,6 +14,9 @@ export type BrainUpdatePayload = {
   professional_summary?: string;
   custom_notes?: string;
   system_prompt?: string;
+  pricing_currency?: string;
+  pricing_high?: number;
+  pricing_floor?: number;
 };
 
 export function useBrain() {

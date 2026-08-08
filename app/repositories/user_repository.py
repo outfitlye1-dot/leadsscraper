@@ -14,6 +14,9 @@ class UserRepository:
     def get_by_email(self, email: str) -> User | None:
         return self.db.query(User).filter(User.email == email.lower()).first()
 
+    def get_by_google_id(self, google_id: str) -> User | None:
+        return self.db.query(User).filter(User.google_id == google_id).first()
+
     def create(
         self,
         name: str,
@@ -21,8 +24,17 @@ class UserRepository:
         password_hash: str,
         *,
         role: UserRole = UserRole.user,
+        google_id: str | None = None,
+        avatar_url: str | None = None,
     ) -> User:
-        user = User(name=name, email=email.lower(), password_hash=password_hash, role=role)
+        user = User(
+            name=name,
+            email=email.lower(),
+            password_hash=password_hash,
+            role=role,
+            google_id=google_id,
+            avatar_url=avatar_url,
+        )
         self.db.add(user)
         self.db.commit()
         self.db.refresh(user)

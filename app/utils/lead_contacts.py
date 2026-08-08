@@ -17,6 +17,7 @@ def sanitize_lead_contacts(lead_data: dict, search_location: str | None = None) 
     country = cleaned.get("country")
     website = cleaned.get("website")
     location_hint = search_location or country
+    source = (cleaned.get("source") or "").lower()
 
     email = cleaned.get("email")
     if email:
@@ -31,14 +32,43 @@ def sanitize_lead_contacts(lead_data: dict, search_location: str | None = None) 
 
     phone = cleaned.get("phone")
     phone_country = _effective_country_for_phone(phone, country) or country
-    formatted = format_contact_phone(phone, phone_country)
     from app.utils import phone_lib
+    import re
+
+    is_maps = (
+        source in ("apify", "playwright_maps", "apify+web_search", "web_search+apify")
+        or "apify" in source
+        or "playwright_maps" in source
+    )
+
+    # Keep Google Maps display formatting (spaces/dashes) — do not force E.164
+    if phone and is_maps:
+        digits = re.sub(r"\D", "", str(phone))
+        if len(digits) >= 8:
+            cleaned["phone"] = re.sub(r"\s+", " ", str(phone).strip())
+            return cleaned
+        cleaned["phone"] = None
+        return cleaned
+
+    formatted = format_contact_phone(phone, phone_country)
 
     if formatted:
-        if location_hint and not phone_lib.phone_matches_search_region(formatted, location_hint):
+        # Google Maps phones are trusted — do not wipe on soft region mismatches
+        if (
+            location_hint
+            and not is_maps
+            and not phone_lib.phone_matches_search_region(formatted, location_hint)
+        ):
             cleaned["phone"] = None
         else:
             cleaned["phone"] = formatted
+    elif phone:
+        # Keep long digit strings from Maps even when phonenumbers format fails
+        digits = re.sub(r"\D", "", str(phone))
+        if ("apify" in source or "playwright_maps" in source) and len(digits) >= 10:
+            cleaned["phone"] = str(phone).strip()
+        else:
+            cleaned["phone"] = None
     else:
         cleaned["phone"] = None
 

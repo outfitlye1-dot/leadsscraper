@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   Database,
@@ -12,10 +14,12 @@ import {
 } from "lucide-react";
 import api from "@/lib/api";
 import { BackgroundScraperTerminal } from "@/components/BackgroundScraperTerminal";
+import { PageLoader } from "@/components/Loader";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { PageHeader } from "@/components/PageHeader";
+import { useAuth } from "@/hooks/useAuth";
 import type { LeadDatabaseStatsResponse } from "@/lib/types";
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -36,14 +40,29 @@ function StatBox({ label, value, hint }: { label: string; value: string | number
 }
 
 export default function DatabaseSettingsPage() {
+  const router = useRouter();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
+  useEffect(() => {
+    if (user && !isAdmin) {
+      router.replace("/settings");
+    }
+  }, [user, isAdmin, router]);
+
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["lead-database-stats"],
+    enabled: isAdmin,
     queryFn: async () => {
       const { data: stats } = await api.get<LeadDatabaseStatsResponse>("/settings/database");
       return stats;
     },
     refetchInterval: 30_000,
   });
+
+  if (!user || !isAdmin) {
+    return <PageLoader />;
+  }
 
   return (
     <div className="space-y-8">

@@ -5,6 +5,7 @@ import { ChevronDown, ChevronUp, Radio } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ScraperTerminal } from "@/components/scraper/ScraperTerminal";
 import { Button } from "@/components/ui/Button";
+import { useAuth } from "@/hooks/useAuth";
 import { useBackgroundScraperStatus } from "@/hooks/useBackgroundScraper";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +18,8 @@ type Props = {
 
 export function BackgroundScraperTerminal({ docked = false, expanded = false }: Props) {
   const { data: status } = useBackgroundScraperStatus();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [open, setOpen] = useState(expanded);
   const isActive = Boolean(status?.active);
   const isRunning = Boolean(status?.running);
@@ -69,11 +72,13 @@ export function BackgroundScraperTerminal({ docked = false, expanded = false }: 
               <ChevronUp className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
             )}
           </button>
-          <Link href="/settings/database">
-            <Button type="button" variant="outline" size="sm">
-              Database
-            </Button>
-          </Link>
+          {isAdmin ? (
+            <Link href="/settings/database">
+              <Button type="button" variant="outline" size="sm">
+                Database
+              </Button>
+            </Link>
+          ) : null}
         </div>
       ) : null}
 

@@ -7,14 +7,23 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.database.base import Base
 from app.database.database import engine
-from app.database.migrate import ensure_lead_columns, ensure_outreach_settings_columns
-from app.routes import admin, ai, auth, brain, campaigns, cv, dashboard, email_outreach, leads, messages, scraper, settings as settings_routes, user_api_keys
+from app.database.migrate import (
+    ensure_brain_columns,
+    ensure_conversation_columns,
+    ensure_lead_columns,
+    ensure_outreach_settings_columns,
+    ensure_user_google_columns,
+    ensure_whatsapp_chat_columns,
+)
+from app.routes import admin, ai, auth, brain, campaigns, cv, dashboard, email_outreach, leads, messages, payments, scraper, settings as settings_routes, support, user_api_keys, whatsapp_chat, whatsapp_web, whatsapp_webhook
 from app.utils.file_utils import ensure_directory
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
     import logging
+    import threading
 
     settings = get_settings()
     if settings.SECRET_KEY == "change-me-in-production-use-a-long-random-string":
@@ -23,9 +32,15 @@ async def lifespan(app: FastAPI):
         )
     ensure_directory(settings.UPLOAD_DIR)
     ensure_directory(settings.EXPORT_DIR)
+    import app.models  # noqa: F401 — register all ORM tables
+
     Base.metadata.create_all(bind=engine)
     ensure_lead_columns(engine)
     ensure_outreach_settings_columns(engine)
+    ensure_user_google_columns(engine)
+    ensure_brain_columns(engine)
+    ensure_conversation_columns(engine)
+    ensure_whatsapp_chat_columns(engine)
     from app.database.database import SessionLocal
     from app.database.admin_bootstrap import ensure_admin_user
 
@@ -38,12 +53,30 @@ async def lifespan(app: FastAPI):
         from app.services.email_outreach.worker import outreach_worker
 
         outreach_worker.start()
+        settings = get_settings()
+        if settings.WA_WEB_ENABLED and settings.WA_WEB_AUTO_START_WORKER:
+            from app.services.whatsapp_web.worker import wa_web_worker
+
+            wa_web_worker.start()
 
     threading.Timer(3.0, _start_worker).start()
     yield
     from app.services.email_outreach.worker import outreach_worker
 
     outreach_worker.stop()
+    try:
+        from app.services.whatsapp_web.worker import wa_web_worker
+
+        wa_web_worker.stop()
+    except Exception:
+        pass
+    try:
+        from app.services.whatsapp_web.browser import wa_web_browser
+
+        # Shutdown must not run on the asyncio loop thread (Playwright Sync)
+        await asyncio.to_thread(wa_web_browser.shutdown)
+    except Exception:
+        pass
 
 
 def create_app() -> FastAPI:
@@ -108,7 +141,12 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(user_api_keys.router)
     app.include_router(settings_routes.router)
+    app.include_router(payments.router)
     app.include_router(email_outreach.router)
+    app.include_router(support.router)
+    app.include_router(whatsapp_chat.router)
+    app.include_router(whatsapp_web.router)
+    app.include_router(whatsapp_webhook.router)
     app.include_router(admin.router)
 
     @app.get("/health", tags=["health"], summary="Health check")

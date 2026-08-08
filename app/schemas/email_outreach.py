@@ -202,6 +202,74 @@ class ConversationResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ChatThreadResponse(BaseModel):
+    lead_id: int
+    conversation_id: int | None = None
+    lead_name: str
+    lead_email: str = ""
+    subject: str
+    status: str
+    reply_intent: str | None = None
+    reply_summary: str | None = None
+    last_message_at: datetime | None = None
+    last_preview: str | None = None
+    has_reply: bool = False
+    message_count: int = 0
+    unread_count: int = 0
+    is_manual_chat: bool = False
+    is_online: bool = False
+    last_seen_at: datetime | None = None
+
+
+class ChatMessageResponse(BaseModel):
+    id: str
+    direction: str
+    from_email: str
+    to_email: str
+    subject: str
+    body_text: str
+    sent_at: datetime | None = None
+    status: str | None = None
+    source: str
+    outreach_email_id: int | None = None
+    delivery_status: str | None = None  # sent | delivered | read
+
+
+class ChatThreadDetailResponse(BaseModel):
+    lead_id: int
+    conversation_id: int | None = None
+    lead_name: str
+    lead_email: str = ""
+    subject: str
+    status: str
+    messages: list[ChatMessageResponse]
+    is_online: bool = False
+    last_seen_at: datetime | None = None
+
+
+class ChatReplyRequest(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=500)
+    body: str = Field("", max_length=20000)
+    account_id: int | None = None
+
+
+class ChatAiReplyRequest(BaseModel):
+    """Optional notes for the AI when auto-generating + sending a reply."""
+
+    hint: str | None = Field(None, max_length=500)
+    account_id: int | None = None
+
+
+class ChatStartRequest(BaseModel):
+    """Start a WhatsApp-style chat with any Gmail/email address."""
+
+    email: str = Field(..., min_length=3, max_length=255)
+    name: str | None = Field(None, max_length=255)
+    subject: str = Field("Hello", min_length=1, max_length=500)
+    body: str = Field(..., min_length=1, max_length=20000)
+    account_id: int | None = None
+
+
 class AiReplyDraftResponse(BaseModel):
     id: int
     conversation_id: int
@@ -336,6 +404,15 @@ class PilotEmailResponse(BaseModel):
     subject: str
     body_text: str
     status: str
+
+
+class ManualLeadOutreachResponse(BaseModel):
+    message: str
+    subject: str
+    to_email: str
+    status: str
+    lead_id: int
+    company_name: str | None = None
 
 
 class AgentActionResponse(BaseModel):

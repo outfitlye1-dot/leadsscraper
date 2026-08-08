@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Cpu, LayoutDashboard, Mail, Search, Settings, Users } from "lucide-react";
+import { Activity, Cpu, KeyRound, LayoutDashboard, Mail, Search, Settings, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
@@ -11,6 +11,7 @@ const items = [
   { href: "/admin/leads", label: "Leads", icon: Search },
   { href: "/admin/outreach", label: "Outreach", icon: Mail },
   { href: "/admin/scraper", label: "Scraper Jobs", icon: Activity },
+  { href: "/admin/apis", label: "API Keys", icon: KeyRound },
   { href: "/admin/system", label: "System", icon: Cpu },
 ];
 

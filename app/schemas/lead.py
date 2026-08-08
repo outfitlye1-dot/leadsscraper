@@ -142,6 +142,7 @@ class LeadResponse(BaseModel):
     is_saved: bool = False
     saved_at: datetime | None = None
     contact_links: LeadContactLinks | None = None
+    outreach_email_status: str = "none"
     created_at: datetime
     updated_at: datetime
 

@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.database.database import get_db
 from app.models.user import User
 from app.schemas.user import (
+    OAuthStartResponse,
     OtpSendRequest,
     OtpSendResponse,
     OtpVerifyRequest,
@@ -13,6 +15,7 @@ from app.schemas.user import (
     UserRegisterRequest,
     UserResponse,
 )
+from app.services.google_auth_service import GoogleAuthService
 from app.services.otp_service import OtpService
 from app.services.auth_service import AuthService
 
@@ -76,6 +79,33 @@ async def send_otp(data: OtpSendRequest, db: Session = Depends(get_db)) -> OtpSe
 def verify_otp(data: OtpVerifyRequest, db: Session = Depends(get_db)) -> TokenResponse:
     result = OtpService(db).verify_otp(data)
     return TokenResponse(**result)
+
+
+@router.get("/google/start", response_model=OAuthStartResponse)
+def google_auth_start(
+    redirect_uri: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> OAuthStartResponse:
+    url = GoogleAuthService(db).start(redirect_uri)
+    return OAuthStartResponse(url=url)
+
+
+@router.get("/google/callback")
+def google_auth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
+):
+    if error or not code or not state:
+        return RedirectResponse(
+            url=GoogleAuthService._frontend_error(
+                error or "Google sign-in was cancelled.",
+                None,
+            )
+        )
+    redirect_url = GoogleAuthService(db).handle_callback(code, state)
+    return RedirectResponse(url=redirect_url)
 
 
 @router.get(

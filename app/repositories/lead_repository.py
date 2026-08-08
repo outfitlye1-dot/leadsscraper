@@ -177,9 +177,14 @@ class LeadRepository:
         return self.find_background_for_scrape_request(user_id, data, limit)
 
     def delete_by_ids(self, user_id: int, lead_ids: list[int], *, saved: bool | None = None) -> int:
+        """Hard-delete leads by ID. Does not apply list/search background filters."""
         if not lead_ids:
             return 0
-        query = self._filtered_query(user_id, saved=saved).filter(Lead.id.in_(lead_ids))
+        query = self.db.query(Lead).filter(Lead.user_id == user_id, Lead.id.in_(lead_ids))
+        if saved is True:
+            query = query.filter(Lead.is_saved.is_(True))
+        elif saved is False:
+            query = query.filter(or_(Lead.is_saved.is_(False), Lead.is_saved.is_(None)))
         count = query.delete(synchronize_session=False)
         self.db.commit()
         return count
@@ -226,6 +231,7 @@ class LeadRepository:
         has_website: bool | None = None,
         saved: bool | None = None,
     ) -> int:
+        # Include background-tagged leads so "delete all" actually clears inbox/cache rows
         count = self._filtered_query(
             user_id,
             q,
@@ -241,6 +247,7 @@ class LeadRepository:
             has_email,
             has_website,
             saved,
+            include_background=True,
         ).delete(synchronize_session=False)
         self.db.commit()
         return count
@@ -420,7 +427,7 @@ class LeadRepository:
             return 0
         now = datetime.now(UTC)
         count = (
-            self._filtered_query(user_id, saved=False)
+            self._filtered_query(user_id, saved=False, include_background=True)
             .filter(Lead.id.in_(lead_ids))
             .update({"is_saved": True, "saved_at": now}, synchronize_session=False)
         )

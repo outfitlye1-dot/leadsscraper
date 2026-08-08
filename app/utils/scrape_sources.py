@@ -30,15 +30,15 @@ class ScrapeSourceMode(str, Enum):
 
 
 def build_internet_search_query(keyword: str, location: str) -> str:
-    """Maps-style free internet query from keyword + location."""
+    """Short DDGS/Bing-friendly query — stacked contact words return empty results."""
     kw = (keyword or "").strip()
     loc = (location or "").strip()
     if kw and loc:
-        return f"{kw} {loc} contact email phone whatsapp"
+        return f"{kw} {loc}"
     if kw:
-        return f"{kw} contact email phone whatsapp"
+        return kw
     if loc:
-        return f"local business {loc} contact email phone whatsapp"
+        return f"local business {loc}"
     return ""
 
 
@@ -49,6 +49,7 @@ SKIP_SEARCH_DOMAINS = (
     "wikipedia.org",
     "yelp.com",
     "tripadvisor.com",
+    "tripadvisor.co.uk",
     "pinterest.com",
     "twitter.com",
     "x.com",
@@ -90,6 +91,30 @@ SKIP_SEARCH_DOMAINS = (
     "zomato.com",
     "foodpanda.com",
     "duckduckgo.com",
+    "timeout.com",
+    "restaurantguru.com",
+    "thefork.com",
+    "thefork.co.uk",
+    "opentable.com",
+)
+
+# Brand tokens matched across ccTLDs (tripadvisor.co.uk, yelp.co.uk, …)
+SKIP_SEARCH_BRANDS = frozenset(
+    {
+        "tripadvisor",
+        "yelp",
+        "zomato",
+        "timeout",
+        "restaurantguru",
+        "thefork",
+        "opentable",
+        "trustpilot",
+        "yellowpages",
+        "justdial",
+        "foodpanda",
+        "booking",
+        "hotels",
+    }
 )
 
 DIRECTORY_AGGREGATOR_HINTS = (
@@ -118,13 +143,20 @@ DIRECTORY_AGGREGATOR_HINTS = (
     "/category/",
     "/top-",
     "/best-",
+    "-best-",
     "/listicles/",
     "/agency/",
     "/webdesigners/",
     "/blog/",
     "/news/",
     "/article/",
+    "/articles/",
     "/guide/",
+    "/guides/",
+    "beautiful-",
+    "-to-visit",
+    "instagrammable",
+    "things-to-do",
 )
 
 LISTICLE_URL_PATH_HINTS = (
@@ -134,8 +166,24 @@ LISTICLE_URL_PATH_HINTS = (
     "/webdesigners/",
     "/top-",
     "/best-",
+    "-best-",
     "/directory/",
     "/listings/",
+    "/guide/",
+    "/guides/",
+    "/article/",
+    "/articles/",
+    "/blog/",
+    "beautiful-",
+    "-to-visit",
+    "instagrammable",
+    "things-to-do",
+    "/restaurants-",
+    "coffee-shops",
+    "quirkiest",
+    "finest-",
+    "best-cafes",
+    "best-coffee",
 )
 
 LISTICLE_TITLE_PATTERN = re.compile(
@@ -148,7 +196,11 @@ LISTICLE_TITLE_PATTERN = re.compile(
     r"\bhow\s+to\s+(?:choose|find|pick)\b|\bcompare\s+\d+\b|"
     r"\branking\b|\bdirectory\b|\bnear\s+me\b|\bfind\s+a\b|"
     r"\breviews?\s*:|\bvs\.?\b|\bcomparison\b|\broundup\b|"
-    r"\bpresents\b"
+    r"\bpresents\b|"
+    r"\bto\s+visit\b|\binstagrammable\b|\bfinest\s+\w+\s+(?:in|near)\b|"
+    r"\bindependent\s+(?:coffee|cafes?|shops?)\s+in\b|"
+    r"\bbest\s+cafes?\b|\bbest\s+coffee\b|"
+    r"\bbest\b.+\bin\b|\bwelcome\s+to\b"
     r")",
     re.IGNORECASE,
 )
@@ -216,11 +268,28 @@ def _host(url: str) -> str:
         return ""
 
 
+def _host_matches_skip_domain(host: str, skip: str) -> bool:
+    if not host or not skip:
+        return False
+    if host == skip or host.endswith("." + skip):
+        return True
+    # tripadvisor.com → also tripadvisor.co.uk / tripadvisor.de
+    brand = skip.split(".")[0]
+    if brand in SKIP_SEARCH_BRANDS:
+        labels = host.split(".")
+        return brand in labels
+    return False
+
+
 def is_listicle_url(url: str | None) -> bool:
     if not url:
         return False
-    path = urlparse(url if "://" in url else f"https://{url}").path.lower()
-    return any(hint in path for hint in LISTICLE_URL_PATH_HINTS)
+    raw = url if "://" in url else f"https://{url}"
+    parsed = urlparse(raw)
+    path = (parsed.path or "").lower()
+    host = _host(url)
+    combined = f"{host}{path}"
+    return any(hint in combined for hint in LISTICLE_URL_PATH_HINTS)
 
 
 def is_directory_or_aggregator_url(url: str | None) -> bool:
@@ -266,19 +335,39 @@ def is_hostname_company_name(company_name: str, website: str | None) -> bool:
     return bool(host and name and host == name)
 
 
-def should_skip_search_url(url: str | None) -> bool:
+def should_skip_search_url(
+    url: str | None,
+    *,
+    allow_maps_social: bool = False,
+) -> bool:
     if not url:
         return True
     if is_google_maps_url(url):
-        return True
+        return not allow_maps_social
     if is_social_only_url(url):
-        return True
+        return not allow_maps_social
     if is_listicle_url(url):
         return True
     if is_directory_or_aggregator_url(url):
         return True
     host = _host(url)
-    return any(skip in host for skip in SKIP_SEARCH_DOMAINS)
+    if allow_maps_social:
+        # Keep Maps / Facebook / Instagram for no-website discovery
+        if any(
+            skip in host
+            for skip in (
+                "google.com",
+                "google.com.pk",
+                "facebook.com",
+                "fb.com",
+                "instagram.com",
+            )
+        ):
+            return False
+    if any(_host_matches_skip_domain(host, skip) for skip in SKIP_SEARCH_DOMAINS):
+        return True
+    labels = host.split(".")
+    return any(brand in labels for brand in SKIP_SEARCH_BRANDS)
 
 
 GENERIC_TITLE_WORDS = frozenset(
@@ -293,6 +382,14 @@ GENERIC_TITLE_WORDS = frozenset(
         "page not found",
         "coming soon",
         "under construction",
+        "united kingdom",
+        "united states",
+        "england",
+        "london",
+        "uk",
+        "usa",
+        "pakistan",
+        "india",
     }
 )
 
@@ -477,7 +574,7 @@ def is_quality_business_lead(lead: dict, search_location: str | None = None) -> 
             has_phone = False
 
     maps_phone = bool(
-        lead.get("source") == "apify"
+        lead.get("source") in ("apify", "playwright_maps")
         and lead.get("phone")
         and len(re.sub(r"\D", "", str(lead["phone"]))) >= 10
     )
@@ -671,7 +768,10 @@ def map_web_search_result(
 
     lead = sanitize_lead_contacts(normalize_website_field(lead), search_location=location)
     if discovery_only:
-        if not is_verified_discovery_lead(lead, search_location=location):
+        # Accept real business websites from search even without phone/email yet.
+        # Requiring verified contact here caused Internet scrapes to finish with 0 leads
+        # when deep crawl was skipped (fast mode).
+        if not is_quality_business_lead(lead, search_location=location):
             return None
         return lead
     if not is_quality_business_lead(lead, search_location=location):

@@ -9,7 +9,7 @@ import { PageLoader } from "@/components/Loader";
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { fetchUser, user, logout } = useAuth();
   const router = useRouter();
-  const [ready, setReady] = useState(false);
+  const [ready, setReady] = useState(() => Boolean(getToken() && user));
 
   useEffect(() => {
     let active = true;
@@ -22,9 +22,13 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      if (!user) {
-        await fetchUser();
+      // User already in memory — don't block navigation on /auth/me
+      if (user) {
+        if (active) setReady(true);
+        return;
       }
+
+      await fetchUser();
 
       if (!active) return;
 

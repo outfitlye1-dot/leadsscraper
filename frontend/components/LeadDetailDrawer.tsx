@@ -5,6 +5,8 @@ import {
   Building2,
   Clock,
   Globe,
+  MapPin,
+  Phone,
   Sparkles,
   Target,
   X,
@@ -37,11 +39,21 @@ interface LeadDetailDrawerProps {
   isSaving?: boolean;
 }
 
-function ScoreCard({ label, value, suffix = "" }: { label: string; value: number | null | undefined; suffix?: string }) {
+function ScoreCard({
+  label,
+  value,
+  suffix = "",
+}: {
+  label: string;
+  value: number | null | undefined;
+  suffix?: string;
+}) {
   if (value == null) return null;
   return (
     <div className="rounded-lg border border-border/60 bg-muted/15 px-3 py-2.5">
-      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
       <p className="mt-0.5 text-lg font-semibold tabular-nums">
         {value}
         {suffix}
@@ -50,7 +62,14 @@ function ScoreCard({ label, value, suffix = "" }: { label: string; value: number
   );
 }
 
-export function LeadDetailDrawer({ lead, open, onClose, onSave, onEditFull, isSaving }: LeadDetailDrawerProps) {
+export function LeadDetailDrawer({
+  lead,
+  open,
+  onClose,
+  onSave,
+  onEditFull,
+  isSaving,
+}: LeadDetailDrawerProps) {
   const [status, setStatus] = useState<LeadStatus>("new");
   const [notes, setNotes] = useState("");
 
@@ -74,6 +93,10 @@ export function LeadDetailDrawer({ lead, open, onClose, onSave, onEditFull, isSa
     { label: "Facebook", url: lead.facebook_url },
     { label: "Instagram", url: lead.instagram_url },
   ].filter((s) => s.url);
+
+  const locationLine = [lead.address, lead.city, lead.postal_code, lead.country]
+    .filter(Boolean)
+    .join(", ");
 
   return (
     <>
@@ -113,7 +136,62 @@ export function LeadDetailDrawer({ lead, open, onClose, onSave, onEditFull, isSa
         </div>
 
         <div className="flex-1 space-y-6 overflow-y-auto p-5">
-          <LeadContactActions lead={lead} />
+          <section className="space-y-3">
+            <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Outreach
+            </h3>
+            <LeadContactActions lead={lead} profile />
+          </section>
+
+          {(lead.phone || lead.email || locationLine || lead.category || lead.industry) && (
+            <section>
+              <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Profile
+              </h3>
+              <div className="space-y-2.5 rounded-xl border border-border/60 p-4 text-sm">
+                {lead.phone ? (
+                  <p className="flex items-center gap-2">
+                    <Phone className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="font-medium">{lead.phone}</span>
+                  </p>
+                ) : null}
+                {lead.email ? (
+                  <p className="flex items-center gap-2">
+                    <span className="w-4 text-center text-muted-foreground">@</span>
+                    <span className="break-all font-medium">{lead.email}</span>
+                  </p>
+                ) : null}
+                {locationLine ? (
+                  <p className="flex items-start gap-2">
+                    <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span>{locationLine}</span>
+                  </p>
+                ) : null}
+                {lead.website && lead.contact_links?.website_url ? (
+                  <p className="flex items-start gap-2">
+                    <Globe className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <a
+                      href={lead.website}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="break-all text-primary hover:underline"
+                    >
+                      {lead.website}
+                    </a>
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-700 dark:text-amber-400">
+                    No website — Offer Website pitch available
+                  </p>
+                )}
+                {lead.category || lead.industry ? (
+                  <p className="text-muted-foreground">
+                    {[lead.category, lead.industry].filter(Boolean).join(" · ")}
+                  </p>
+                ) : null}
+              </div>
+            </section>
+          )}
 
           <section>
             <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -126,7 +204,11 @@ export function LeadDetailDrawer({ lead, open, onClose, onSave, onEditFull, isSa
               <ScoreCard label="Google profile" value={lead.google_profile_score} />
               <ScoreCard label="Social" value={lead.social_activity_score} />
               {lead.rating != null ? (
-                <ScoreCard label="Rating" value={lead.rating} suffix={` · ${lead.reviews_count ?? 0} reviews`} />
+                <ScoreCard
+                  label="Rating"
+                  value={lead.rating}
+                  suffix={` · ${lead.reviews_count ?? 0} reviews`}
+                />
               ) : null}
             </div>
           </section>
@@ -138,11 +220,12 @@ export function LeadDetailDrawer({ lead, open, onClose, onSave, onEditFull, isSa
                 AI recommendations
               </div>
               {lead.ai_qualification ? (
-                <p className="text-sm">{lead.ai_qualification}</p>
+                <p className="text-sm capitalize">{lead.ai_qualification}</p>
               ) : null}
               {lead.recommended_offer ? (
                 <p className="mt-2 text-sm text-muted-foreground">
-                  <span className="font-medium text-foreground">Offer:</span> {lead.recommended_offer}
+                  <span className="font-medium text-foreground">Offer:</span>{" "}
+                  {lead.recommended_offer}
                 </p>
               ) : null}
               {lead.qualification_reason ? (
@@ -150,59 +233,6 @@ export function LeadDetailDrawer({ lead, open, onClose, onSave, onEditFull, isSa
               ) : null}
             </section>
           )}
-
-          <section>
-            <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Contact
-            </h3>
-            <div className="space-y-2 rounded-xl border border-border/60 p-4 text-sm">
-              {lead.phone ? (
-                <p>
-                  <span className="text-muted-foreground">Phone</span>
-                  <span className="ml-2 font-medium">{lead.phone}</span>
-                </p>
-              ) : null}
-              {lead.email ? (
-                <p>
-                  <span className="text-muted-foreground">Email</span>
-                  <span className="ml-2 font-medium">{lead.email}</span>
-                </p>
-              ) : null}
-              {lead.website ? (
-                <p className="flex items-start gap-2">
-                  <Globe className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                  <a
-                    href={lead.website}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="break-all text-primary hover:underline"
-                  >
-                    {lead.website}
-                  </a>
-                </p>
-              ) : null}
-              {(lead.city || lead.country || lead.address) && (
-                <p>
-                  <span className="text-muted-foreground">Location</span>
-                  <span className="ml-2">
-                    {[lead.address, lead.city, lead.postal_code, lead.country].filter(Boolean).join(", ")}
-                  </span>
-                </p>
-              )}
-              {lead.industry ? (
-                <p>
-                  <span className="text-muted-foreground">Industry</span>
-                  <span className="ml-2">{lead.industry}</span>
-                </p>
-              ) : null}
-              {lead.category ? (
-                <p>
-                  <span className="text-muted-foreground">Category</span>
-                  <span className="ml-2">{lead.category}</span>
-                </p>
-              ) : null}
-            </div>
-          </section>
 
           {socialLinks.length > 0 ? (
             <section>

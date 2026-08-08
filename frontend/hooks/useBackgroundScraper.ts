@@ -3,7 +3,7 @@ import api from "@/lib/api";
 import type { BackgroundScrapeStatusResponse } from "@/lib/types";
 import { useAuthStore } from "@/store/authStore";
 
-const POLL_MS = 3_000;
+const POLL_MS = 15_000;
 
 export function useBackgroundScraperStatus(enabled = true) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);

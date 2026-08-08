@@ -16,8 +16,7 @@ def test_demo_rate_limit_blocks_after_max():
 
 
 @patch("app.services.demo_scrape_service.WebSearchService")
-@patch("app.services.demo_scrape_service.EnrichmentService")
-def test_demo_scrape_returns_leads(mock_enrich_cls, mock_web_cls):
+def test_demo_scrape_returns_leads(mock_web_cls):
     mock_web_cls.return_value.search_leads.return_value = [
         {
             "company_name": "Acme GmbH",
@@ -28,7 +27,6 @@ def test_demo_scrape_returns_leads(mock_enrich_cls, mock_web_cls):
             "country": "Germany",
         }
     ]
-    mock_enrich_cls.return_value.enrich_leads_batch.side_effect = lambda leads, **_: leads
 
     result = DemoScrapeService().run("web agency", "Berlin, Germany")
 
@@ -39,6 +37,8 @@ def test_demo_scrape_returns_leads(mock_enrich_cls, mock_web_cls):
     mock_web_cls.return_value.search_leads.assert_called_once()
     call_kwargs = mock_web_cls.return_value.search_leads.call_args
     assert call_kwargs[0][2] == DEMO_LEAD_LIMIT
+    assert call_kwargs.kwargs.get("light") is True
+    assert call_kwargs.kwargs.get("max_seconds") == 15.0
 
 
 @patch("app.services.demo_scrape_service.WebSearchService")

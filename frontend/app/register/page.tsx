@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
@@ -15,8 +15,9 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
+import { GoogleSignInButton } from "@/components/GoogleSignInButton";
 
-const detailsSchema = z
+const registerSchema = z
   .object({
     name: z.string().min(2, "Name must be at least 2 characters"),
     email: z.string().email("Invalid email"),
@@ -28,23 +29,13 @@ const detailsSchema = z
     path: ["confirmPassword"],
   });
 
-const otpSchema = z.object({
-  code: z.string().regex(/^\d{6}$/, "Enter the 6-digit code"),
-});
-
-type DetailsFormData = z.infer<typeof detailsSchema>;
-type OtpFormData = z.infer<typeof otpSchema>;
+type RegisterFormData = z.infer<typeof registerSchema>;
 
 export default function RegisterPage() {
-  const { sendOtp, verifyOtp, isLoading } = useAuth();
+  const { register: registerUser, isLoading } = useAuth();
   const router = useRouter();
-  const [step, setStep] = useState<"details" | "otp">("details");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
 
-  const detailsForm = useForm<DetailsFormData>({ resolver: zodResolver(detailsSchema) });
-  const otpForm = useForm<OtpFormData>({ resolver: zodResolver(otpSchema) });
+  const form = useForm<RegisterFormData>({ resolver: zodResolver(registerSchema) });
 
   useEffect(() => {
     if (getToken()) {
@@ -52,37 +43,15 @@ export default function RegisterPage() {
     }
   }, [router]);
 
-  const onSendOtp = async (data: DetailsFormData) => {
+  const onSubmit = async (data: RegisterFormData) => {
     try {
-      const result = await sendOtp(data.email, "register");
-      setName(data.name);
-      setEmail(data.email);
-      setPassword(data.password);
-      setStep("otp");
-      toast.success(result.message);
+      await registerUser(data.name, data.email, data.password);
+      toast.success("Account created successfully!");
+      router.push("/dashboard");
     } catch (error) {
       toast.error(
         getApiErrorMessage(error, "Registration failed. Email may already be in use.")
       );
-    }
-  };
-
-  const onVerifyOtp = async (data: OtpFormData) => {
-    try {
-      await verifyOtp(email, data.code, "register", name, password);
-      toast.success("Account created successfully!");
-      router.push("/dashboard");
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Invalid or expired code"));
-    }
-  };
-
-  const onResend = async () => {
-    try {
-      const result = await sendOtp(email, "register");
-      toast.success(result.message);
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Please wait before requesting another code"));
     }
   };
 
@@ -101,22 +70,25 @@ export default function RegisterPage() {
         <Card className="app-panel">
           <CardHeader className="text-center">
             <CardTitle className="text-2xl font-semibold">Create account</CardTitle>
-            <CardDescription>
-              {step === "details"
-                ? "Set your password — we will verify your email with a code"
-                : `Enter the code sent to ${email}`}
-            </CardDescription>
+            <CardDescription>Sign up with Google or email and password — no OTP</CardDescription>
           </CardHeader>
           <CardContent>
-            {step === "details" ? (
-              <form onSubmit={detailsForm.handleSubmit(onSendOtp)} className="space-y-5">
+            <div className="space-y-5">
+              <GoogleSignInButton label="Sign up with Google" />
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border/60" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-card px-2 text-muted-foreground">or</span>
+                </div>
+              </div>
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
                 <div className="space-y-2">
                   <Label htmlFor="name">Full Name</Label>
-                  <Input id="name" placeholder="Jane Doe" {...detailsForm.register("name")} />
-                  {detailsForm.formState.errors.name && (
-                    <p className="text-xs text-destructive">
-                      {detailsForm.formState.errors.name.message}
-                    </p>
+                  <Input id="name" placeholder="Jane Doe" {...form.register("name")} />
+                  {form.formState.errors.name && (
+                    <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
                   )}
                 </div>
                 <div className="space-y-2">
@@ -124,13 +96,12 @@ export default function RegisterPage() {
                   <Input
                     id="email"
                     type="email"
-                    placeholder="you@example.com"
-                    {...detailsForm.register("email")}
+                    placeholder="you@gmail.com"
+                    autoComplete="email"
+                    {...form.register("email")}
                   />
-                  {detailsForm.formState.errors.email && (
-                    <p className="text-xs text-destructive">
-                      {detailsForm.formState.errors.email.message}
-                    </p>
+                  {form.formState.errors.email && (
+                    <p className="text-xs text-destructive">{form.formState.errors.email.message}</p>
                   )}
                 </div>
                 <div className="space-y-2">
@@ -139,11 +110,12 @@ export default function RegisterPage() {
                     id="password"
                     type="password"
                     placeholder="••••••••"
-                    {...detailsForm.register("password")}
+                    autoComplete="new-password"
+                    {...form.register("password")}
                   />
-                  {detailsForm.formState.errors.password && (
+                  {form.formState.errors.password && (
                     <p className="text-xs text-destructive">
-                      {detailsForm.formState.errors.password.message}
+                      {form.formState.errors.password.message}
                     </p>
                   )}
                 </div>
@@ -153,58 +125,20 @@ export default function RegisterPage() {
                     id="confirmPassword"
                     type="password"
                     placeholder="••••••••"
-                    {...detailsForm.register("confirmPassword")}
+                    autoComplete="new-password"
+                    {...form.register("confirmPassword")}
                   />
-                  {detailsForm.formState.errors.confirmPassword && (
+                  {form.formState.errors.confirmPassword && (
                     <p className="text-xs text-destructive">
-                      {detailsForm.formState.errors.confirmPassword.message}
-                    </p>
-                  )}
-                </div>
-                <Button type="submit" className="w-full" isLoading={isLoading}>
-                  Send verification code
-                </Button>
-              </form>
-            ) : (
-              <form onSubmit={otpForm.handleSubmit(onVerifyOtp)} className="space-y-5">
-                <div className="space-y-2">
-                  <Label htmlFor="code">Verification code</Label>
-                  <Input
-                    id="code"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    placeholder="123456"
-                    maxLength={6}
-                    {...otpForm.register("code")}
-                  />
-                  {otpForm.formState.errors.code && (
-                    <p className="text-xs text-destructive">
-                      {otpForm.formState.errors.code.message}
+                      {form.formState.errors.confirmPassword.message}
                     </p>
                   )}
                 </div>
                 <Button type="submit" className="w-full" isLoading={isLoading}>
                   Create account
                 </Button>
-                <div className="flex items-center justify-between text-sm">
-                  <button
-                    type="button"
-                    className="text-muted-foreground underline-offset-4 hover:underline"
-                    onClick={() => setStep("details")}
-                  >
-                    Change details
-                  </button>
-                  <button
-                    type="button"
-                    className="font-medium text-foreground underline-offset-4 hover:underline"
-                    onClick={onResend}
-                    disabled={isLoading}
-                  >
-                    Resend code
-                  </button>
-                </div>
               </form>
-            )}
+            </div>
             <p className="mt-6 text-center text-sm font-light text-muted-foreground">
               Already have an account?{" "}
               <Link href="/login" className="font-medium text-foreground underline-offset-4 hover:underline">

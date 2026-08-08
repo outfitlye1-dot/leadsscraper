@@ -203,11 +203,11 @@ def test_cleanup_leads_without_contact(client, auth_headers):
         headers=auth_headers,
         json={"company_name": "Has Email", "email": "hello@company.com", "status": "new"},
     )
-    no_contact = client.post(
+    client.post(
         "/api/leads",
         headers=auth_headers,
         json={"company_name": "No Contact", "status": "new"},
-    ).json()["id"]
+    )
     saved_no_contact = client.post(
         "/api/leads",
         headers=auth_headers,
@@ -278,6 +278,77 @@ def test_cleanup_keeps_phone_and_email_lead(client, auth_headers):
     assert inbox.json()["total"] == 1
     assert inbox.json()["items"][0]["company_name"] == "Full Contact"
 
+
+def test_cleanup_deletes_leads_with_website(client, auth_headers):
+    client.post(
+        "/api/leads",
+        headers=auth_headers,
+        json={
+            "company_name": "Has Site",
+            "phone": "+923001234567",
+            "website": "https://example.com",
+            "status": "new",
+        },
+    )
+    client.post(
+        "/api/leads",
+        headers=auth_headers,
+        json={
+            "company_name": "No Site",
+            "phone": "+923009876543",
+            "status": "new",
+        },
+    )
+
+    response = client.post("/api/leads/cleanup-no-contact", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 1
+    assert response.json()["kept"] == 1
+
+    inbox = client.get("/api/leads", headers=auth_headers)
+    assert inbox.json()["total"] == 1
+    assert inbox.json()["items"][0]["company_name"] == "No Site"
+
+
+def test_cleanup_deletes_background_leads_with_website(client, auth_headers, db_session):
+    from app.models.lead import Lead
+    from app.models.user import User
+
+    user = db_session.query(User).filter(User.email == "test@example.com").first()
+    assert user is not None
+    bg = Lead(
+        user_id=user.id,
+        company_name="BG With Site",
+        phone="+923001111111",
+        website="https://bg-with-site.example",
+        is_saved=False,
+        intelligence_meta={"scrape_context": {"background": True}},
+    )
+    keep = Lead(
+        user_id=user.id,
+        company_name="BG No Site",
+        phone="+923002222222",
+        is_saved=False,
+        intelligence_meta={"scrape_context": {"background": True}},
+    )
+    db_session.add_all([bg, keep])
+    db_session.commit()
+
+    response = client.post("/api/leads/cleanup-no-contact", headers=auth_headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["deleted"] >= 1
+    assert data["kept"] >= 1
+
+    remaining = (
+        db_session.query(Lead)
+        .filter(Lead.user_id == user.id, Lead.company_name.in_(["BG With Site", "BG No Site"]))
+        .all()
+    )
+    by_name = {l.company_name: l for l in remaining}
+    assert "BG With Site" not in by_name
+    assert "BG No Site" in by_name
+    assert by_name["BG No Site"].is_saved is False
 
 def test_save_leads_with_contact(client, auth_headers):
     client.post(

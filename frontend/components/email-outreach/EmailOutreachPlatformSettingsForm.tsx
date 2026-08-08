@@ -1,24 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { Mail, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Label } from "@/components/ui/Label";
-import {
-  useConnectSmtpAccount,
-  useDeleteEmailAccount,
-  useEmailAccounts,
-  useEmailOutreachSettings,
-  useStartGoogleOAuth,
-  useStartMicrosoftOAuth,
-  useUpdateEmailOutreachSettings,
-} from "@/hooks/useEmailOutreach";
-import { statusVariant } from "@/components/email-outreach/outreachEmailUtils";
 import { PageLoader } from "@/components/Loader";
+import { useAdminOutreachSettings, useUpdateAdminOutreachSettings } from "@/hooks/useAdmin";
+import type { EmailOutreachSettings } from "@/lib/types";
 
 function ToggleRow({
   label,
@@ -47,23 +36,14 @@ function ToggleRow({
   );
 }
 
-export function EmailOutreachSettingsForm() {
-  const { data: settings, isLoading, isError } = useEmailOutreachSettings();
-  const { data: accounts = [] } = useEmailAccounts();
-  const updateSettings = useUpdateEmailOutreachSettings();
-  const connectSmtp = useConnectSmtpAccount();
-  const deleteAccount = useDeleteEmailAccount();
-  const startGoogle = useStartGoogleOAuth();
-  const startMicrosoft = useStartMicrosoftOAuth();
+export function EmailOutreachPlatformSettingsForm() {
+  const { data: settings, isLoading, isError } = useAdminOutreachSettings();
+  const updateSettings = useUpdateAdminOutreachSettings();
 
-  const [showSmtpForm, setShowSmtpForm] = useState(false);
-  const [smtpEmail, setSmtpEmail] = useState("");
-  const [smtpPassword, setSmtpPassword] = useState("");
-
-  const save = (patch: Parameters<typeof updateSettings.mutate>[0]) => {
+  const save = (patch: Partial<EmailOutreachSettings>) => {
     updateSettings.mutate(patch, {
-      onSuccess: () => toast.success("Settings saved — applies to AI Agent automatically"),
-      onError: () => toast.error("Failed to save settings"),
+      onSuccess: () => toast.success("Platform outreach settings saved for all users"),
+      onError: () => toast.error("Failed to save outreach settings"),
     });
   };
 
@@ -92,6 +72,13 @@ export function EmailOutreachSettingsForm() {
 
   return (
     <div className="space-y-6">
+      <Card className="border-primary/20 bg-primary/5">
+        <CardContent className="py-4 text-sm text-muted-foreground">
+          These settings apply to <strong className="text-foreground">every user</strong> on the
+          platform. Users cannot change limits or automation — only connect their own email accounts.
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>Daily outreach preset</CardTitle>
@@ -109,9 +96,7 @@ export function EmailOutreachSettingsForm() {
       <Card>
         <CardHeader>
           <CardTitle>Automation</CardTitle>
-          <CardDescription>
-            These settings apply instantly to the Email Outreach agent and all campaigns.
-          </CardDescription>
+          <CardDescription>Master switches for automatic email sending across all users.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <ToggleRow
@@ -128,7 +113,7 @@ export function EmailOutreachSettingsForm() {
           />
           <ToggleRow
             label="Require review before send"
-            description="AI drafts wait for your approval on the agent page."
+            description="AI drafts wait for approval on the agent page."
             checked={settings.require_review}
             onChange={(v) => save({ require_review: v, auto_send_enabled: !v })}
           />
@@ -150,7 +135,7 @@ export function EmailOutreachSettingsForm() {
       <Card>
         <CardHeader>
           <CardTitle>Send limits & schedule</CardTitle>
-          <CardDescription>Daily caps, working hours, and batch timing.</CardDescription>
+          <CardDescription>Daily caps, working hours, and batch timing for all users.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -195,9 +180,6 @@ export function EmailOutreachSettingsForm() {
                   save({ agent_batch_delay_minutes: Number(e.target.value) || 10 })
                 }
               />
-              <p className="mt-1 text-xs text-muted-foreground">
-                Wait after agent start before daily batch.
-              </p>
             </div>
             <div>
               <Label>Working hours start (0–23)</Label>
@@ -243,125 +225,10 @@ export function EmailOutreachSettingsForm() {
           />
           <ToggleRow
             label="Safe auto-reply only"
-            description="Only auto-send for simple questions and out-of-office. Turn off to reply to interested leads too."
+            description="Only auto-send for simple questions and out-of-office."
             checked={settings.auto_reply_simple_only ?? false}
             onChange={(v) => save({ auto_reply_simple_only: v })}
           />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Mail className="h-4 w-4" />
-            Email accounts
-          </CardTitle>
-          <CardDescription>Gmail, Outlook, or SMTP — used by the AI Agent to send mail.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-wrap gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                startGoogle.mutate(undefined, {
-                  onSuccess: (url) => {
-                    window.location.href = url;
-                  },
-                  onError: () => toast.error("Google OAuth not configured on server"),
-                })
-              }
-            >
-              Connect Gmail
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                startMicrosoft.mutate(undefined, {
-                  onSuccess: (url) => {
-                    window.location.href = url;
-                  },
-                  onError: () => toast.error("Microsoft OAuth not configured on server"),
-                })
-              }
-            >
-              Connect Outlook
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setShowSmtpForm((v) => !v)}>
-              <Plus className="mr-1 h-3 w-3" />
-              SMTP
-            </Button>
-          </div>
-
-          {showSmtpForm && (
-            <div className="space-y-3 rounded-lg border border-border/60 p-4">
-              <div>
-                <Label>Email</Label>
-                <Input value={smtpEmail} onChange={(e) => setSmtpEmail(e.target.value)} />
-              </div>
-              <div>
-                <Label>App password</Label>
-                <Input
-                  type="password"
-                  value={smtpPassword}
-                  onChange={(e) => setSmtpPassword(e.target.value)}
-                />
-              </div>
-              <Button
-                size="sm"
-                onClick={() =>
-                  connectSmtp.mutate(
-                    { email_address: smtpEmail, password: smtpPassword },
-                    {
-                      onSuccess: () => {
-                        toast.success("SMTP account connected");
-                        setShowSmtpForm(false);
-                        setSmtpPassword("");
-                      },
-                      onError: () => toast.error("Failed to connect SMTP account"),
-                    }
-                  )
-                }
-              >
-                Save account
-              </Button>
-            </div>
-          )}
-
-          <div className="space-y-2">
-            {accounts.length === 0 && (
-              <p className="text-sm text-muted-foreground">No accounts connected yet.</p>
-            )}
-            {accounts.map((account) => (
-              <div
-                key={account.id}
-                className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2 text-sm"
-              >
-                <div>
-                  <p className="font-medium">{account.email_address}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {account.provider}
-                    {account.is_default ? " · default" : ""}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={statusVariant(account.status)}>{account.status}</Badge>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() =>
-                      deleteAccount.mutate(account.id, {
-                        onSuccess: () => toast.success("Account removed"),
-                      })
-                    }
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
         </CardContent>
       </Card>
     </div>

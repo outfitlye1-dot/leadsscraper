@@ -13,7 +13,7 @@ MAPS_FALLBACK_LEADS = [
         "email": "info@mapsfb.com",
         "website": "https://mapsfb.com",
         "country": "United Kingdom",
-        "source": "apify",
+        "source": "playwright_maps",
         "status": LeadStatus.new,
     }
 ]
@@ -22,14 +22,16 @@ MAPS_FALLBACK_LEADS = [
 @patch("app.services.all_in_one_scraper_service.get_settings")
 @patch("app.services.all_in_one_scraper_service.EnrichmentService")
 @patch("app.services.all_in_one_scraper_service.ApifyService")
-def test_internet_does_not_fallback_to_maps_when_empty(mock_apify_class, mock_enrich_class, mock_settings, db_session):
-    mock_settings.return_value.APIFY_ACTOR_ID = "actor-id"
+def test_internet_uses_playwright_maps_when_web_empty(
+    mock_apify_class, mock_enrich_class, mock_settings, db_session
+):
+    mock_settings.return_value.SCRAPER_INTERNET_MAX_SECONDS = 40.0
 
     mock_apify = MagicMock()
     mock_apify._normalize_location.side_effect = lambda x: x
-    mock_apify._scrape_google_maps.return_value = MAPS_FALLBACK_LEADS
+    mock_apify.scrape_maps_playwright_local.return_value = MAPS_FALLBACK_LEADS
     mock_apify.web_search_service.search_leads.return_value = []
-    mock_apify.count_by_source.return_value = (0, 0, 0)
+    mock_apify.count_by_source.return_value = (1, 0, 0)
     mock_apify_class.return_value = mock_apify
 
     mock_enrich = MagicMock()
@@ -37,7 +39,6 @@ def test_internet_does_not_fallback_to_maps_when_empty(mock_apify_class, mock_en
     mock_enrich_class.return_value = mock_enrich
 
     from app.models.user import User, UserRole
-    from app.models.user_api_key import ApiKeyStatus, ApiProvider, UserApiKey
 
     user = User(
         id=1,
@@ -47,16 +48,6 @@ def test_internet_does_not_fallback_to_maps_when_empty(mock_apify_class, mock_en
         role=UserRole.user,
     )
     db_session.add(user)
-    db_session.add(
-        UserApiKey(
-            user_id=1,
-            provider=ApiProvider.apify,
-            label="Test Apify",
-            api_key="apify_api_test_key_12345",
-            priority=0,
-            status=ApiKeyStatus.active,
-        )
-    )
     db_session.commit()
 
     service = AllInOneScraperService(db_session)
@@ -75,10 +66,9 @@ def test_internet_does_not_fallback_to_maps_when_empty(mock_apify_class, mock_en
     )
 
     assert result.success is True
-    assert result.count == 0
-    assert result.google_maps_count == 0
-    assert result.google_search_count == 0
-    mock_apify._scrape_google_maps.assert_not_called()
+    assert result.count == 1
+    assert result.google_maps_count == 1
+    mock_apify.scrape_maps_playwright_local.assert_called()
 
 
 def test_derive_maps_search_params_from_query():

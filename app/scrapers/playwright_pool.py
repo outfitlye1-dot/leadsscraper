@@ -28,6 +28,8 @@ class PlaywrightPool:
         self._browser = None
         self._contexts: list = []
         self._max_contexts = max(1, get_settings().SCRAPER_PLAYWRIGHT_CONTEXTS)
+        # Bound concurrent navigations — do NOT hold the lock while waiting on network
+        self._slots = threading.Semaphore(self._max_contexts)
 
     def _ensure_browser(self):
         from playwright.sync_api import sync_playwright
@@ -91,42 +93,55 @@ class PlaywrightPool:
             return None
 
         fast = get_settings().SCRAPER_FAST_MODE
+        if not self._slots.acquire(timeout=max(1.0, timeout_ms / 1000.0)):
+            logger.debug("Playwright pool busy — skip %s", url)
+            return None
 
-        with self._lock:
-            context = None
-            try:
+        context = None
+        page = None
+        try:
+            with self._lock:
                 context = self._acquire_context()
                 page = context.new_page()
+
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            try:
+                page.wait_for_load_state(
+                    "networkidle",
+                    timeout=min(3000 if fast else 6000, timeout_ms // 2),
+                )
+            except Exception:
+                pass
+
+            cached = get_cached_selectors(url)
+            selectors = cached.all_selectors() if cached else list(CONTACT_SELECTORS)
+            for selector in selectors:
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=min(6000, timeout_ms // 2))
-                    except Exception:
-                        pass
+                    page.wait_for_selector(selector, timeout=500 if fast else 1500)
+                    break
+                except Exception:
+                    continue
 
-                    cached = get_cached_selectors(url)
-                    selectors = cached.all_selectors() if cached else list(CONTACT_SELECTORS)
-                    for selector in selectors:
-                        try:
-                            page.wait_for_selector(selector, timeout=800 if fast else 1500)
-                            break
-                        except Exception:
-                            continue
-
-                    self._human_behavior(page, scroll=human_scroll)
-                    html = page.content()[:500_000]
-                    if cached and not repair_selectors(html, url, []):
-                        pass
-                    return html
-                finally:
-                    page.close()
-            except Exception as exc:
-                logger.debug("Playwright pool fetch failed for %s: %s", url, exc)
+            self._human_behavior(page, scroll=human_scroll)
+            html = page.content()[:500_000]
+            if cached and not repair_selectors(html, url, []):
+                pass
+            return html
+        except Exception as exc:
+            logger.debug("Playwright pool fetch failed for %s: %s", url, exc)
+            with self._lock:
                 self._shutdown_unlocked()
-                return None
-            finally:
-                if context is not None:
+            return None
+        finally:
+            try:
+                if page is not None:
+                    page.close()
+            except Exception:
+                pass
+            if context is not None:
+                with self._lock:
                     self._release_context(context)
+            self._slots.release()
 
     def close(self) -> None:
         with self._lock:

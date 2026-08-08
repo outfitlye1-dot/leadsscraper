@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LogOut, Menu, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun, User } from "lucide-react";
@@ -54,7 +55,9 @@ export function Navbar() {
             variant="ghost"
             size="sm"
             className="gap-2 text-muted-foreground hover:text-foreground"
-            onClick={() => setShowMenu(!showMenu)}
+            onClick={() => setShowMenu((open) => !open)}
+            aria-expanded={showMenu}
+            aria-haspopup="menu"
           >
             <div className="flex h-7 w-7 items-center justify-center rounded-full border border-border/80 bg-muted/50">
               <User className="h-3.5 w-3.5" />
@@ -62,32 +65,45 @@ export function Navbar() {
             <span className="hidden text-sm font-medium sm:inline">{user?.name || "User"}</span>
           </Button>
 
-          {showMenu && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
-              <div className="liquid-glass absolute right-0 top-full z-50 mt-2 w-52 rounded-xl p-1.5">
-                <div className="border-b border-border/60 px-3 py-2.5">
-                  <p className="text-sm font-medium">{user?.name}</p>
-                  <p className="truncate text-xs font-light text-muted-foreground">{user?.email}</p>
-                </div>
-                <Link
-                  href="/settings"
+          {showMenu &&
+            typeof document !== "undefined" &&
+            createPortal(
+              <>
+                <div
+                  className="fixed inset-0 z-[200] bg-black/20"
+                  aria-hidden
                   onClick={() => setShowMenu(false)}
-                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                />
+                <div
+                  role="menu"
+                  className="fixed right-4 top-[3.75rem] z-[210] w-52 overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-2xl lg:right-6"
                 >
-                  <Settings className="h-4 w-4" />
-                  Settings
-                </Link>
-                <button
-                  onClick={handleLogout}
-                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10"
-                >
-                  <LogOut className="h-4 w-4" />
-                  Logout
-                </button>
-              </div>
-            </>
-          )}
+                  <div className="border-b border-border bg-muted/40 px-3 py-2.5">
+                    <p className="text-sm font-semibold text-foreground">{user?.name}</p>
+                    <p className="truncate text-xs text-foreground/70">{user?.email}</p>
+                  </div>
+                  <div className="p-1.5">
+                  <Link
+                    href="/settings"
+                    onClick={() => setShowMenu(false)}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+                  >
+                    <Settings className="h-4 w-4 text-foreground/80" />
+                    Settings
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/15"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    Logout
+                  </button>
+                  </div>
+                </div>
+              </>,
+              document.body
+            )}
         </div>
       </div>
     </header>

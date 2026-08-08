@@ -4,11 +4,15 @@ import type {
   AgentStartResponse,
   AgentStatus,
   AiReplyDraft,
+  ChatMessage,
+  ChatThread,
+  ChatThreadDetail,
   EmailAccount,
   EmailConversation,
   EmailOutreachCampaign,
   EmailOutreachDashboard,
   EmailOutreachSettings,
+  ManualLeadOutreachResponse,
   OutreachEmail,
   OutreachNotification,
 } from "@/lib/types";
@@ -284,6 +288,177 @@ export function useEmailConversations() {
   });
 }
 
+export function useChatThreads(poll = false) {
+  return useQuery({
+    queryKey: ["email-chat-threads"],
+    queryFn: async () => {
+      const { data } = await api.get<ChatThread[]>("/email-outreach/chat/threads");
+      return data;
+    },
+    refetchInterval: poll ? 4000 : false,
+  });
+}
+
+export function useChatThread(leadId: number | null, poll = false) {
+  const queryClient = useQueryClient();
+  return useQuery({
+    queryKey: ["email-chat-thread", leadId],
+    enabled: typeof leadId === "number" && leadId > 0,
+    queryFn: async () => {
+      const { data } = await api.get<ChatThreadDetail>(`/email-outreach/chat/leads/${leadId}`);
+      // Clear unread badge + refresh presence for this open chat
+      queryClient.setQueryData<ChatThread[]>(["email-chat-threads"], (prev) => {
+        if (!prev || leadId == null) return prev;
+        return prev.map((t) =>
+          t.lead_id === leadId
+            ? {
+                ...t,
+                unread_count: 0,
+                is_online: data.is_online ?? t.is_online,
+                last_seen_at: data.last_seen_at ?? t.last_seen_at,
+              }
+            : t
+        );
+      });
+      return data;
+    },
+    refetchInterval: poll ? 3000 : false,
+  });
+}
+
+export function useSendChatReply() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      leadId: number;
+      subject: string;
+      body: string;
+      accountId?: number;
+      files?: File[];
+    }) => {
+      const form = new FormData();
+      form.append("subject", payload.subject);
+      form.append("body", payload.body || "");
+      if (payload.accountId != null) {
+        form.append("account_id", String(payload.accountId));
+      }
+      for (const file of payload.files || []) {
+        form.append("files", file);
+      }
+      const { data } = await api.post<ChatMessage>(
+        `/email-outreach/chat/leads/${payload.leadId}/reply`,
+        form
+      );
+      return data;
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["email-chat-thread", vars.leadId] });
+      queryClient.invalidateQueries({ queryKey: ["email-chat-threads"] });
+      queryClient.invalidateQueries({ queryKey: ["email-conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["email-outreach-emails"] });
+    },
+  });
+}
+
+export function useSendAiChatReply() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { leadId: number; hint?: string; accountId?: number }) => {
+      const { data } = await api.post<ChatMessage>(
+        `/email-outreach/chat/leads/${payload.leadId}/ai-reply`,
+        { hint: payload.hint || undefined, account_id: payload.accountId }
+      );
+      return data;
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["email-chat-thread", vars.leadId] });
+      queryClient.invalidateQueries({ queryKey: ["email-chat-threads"] });
+      queryClient.invalidateQueries({ queryKey: ["email-conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["email-outreach-emails"] });
+    },
+  });
+}
+
+export function useSyncChatInbox() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload?: { focusEmail?: string }) => {
+      const { data } = await api.post<{
+        ok: boolean;
+        synced: number;
+        matched_replies: number;
+        new_replies?: number;
+      }>(
+        "/email-outreach/chat/sync-inbox",
+        null,
+        {
+          params: payload?.focusEmail
+            ? { focus_email: payload.focusEmail }
+            : undefined,
+        }
+      );
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["email-chat-threads"] });
+      queryClient.invalidateQueries({ queryKey: ["email-chat-thread"] });
+      queryClient.invalidateQueries({ queryKey: ["email-conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["email-outreach-dashboard"] });
+      // Always pull open thread right after inbox sync so UI is not waiting for poll
+      void queryClient.refetchQueries({ queryKey: ["email-chat-thread"] });
+      void queryClient.refetchQueries({ queryKey: ["email-chat-threads"] });
+      if ((data.new_replies ?? 0) > 0) {
+        void queryClient.refetchQueries({ queryKey: ["outreach-notifications"] });
+      }
+    },
+  });
+}
+
+export function useStartManualChat() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      email: string;
+      name?: string;
+      subject: string;
+      body: string;
+      accountId?: number;
+    }) => {
+      const { data } = await api.post<ChatThreadDetail>("/email-outreach/chat/start", {
+        email: payload.email,
+        name: payload.name || undefined,
+        subject: payload.subject,
+        body: payload.body,
+        account_id: payload.accountId,
+      });
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["email-chat-threads"] });
+      queryClient.invalidateQueries({ queryKey: ["email-chat-thread", data.lead_id] });
+      queryClient.invalidateQueries({ queryKey: ["leads"] });
+    },
+  });
+}
+
+export function useDeleteChatThread() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { leadId: number; deleteLead?: boolean }) => {
+      await api.delete(`/email-outreach/chat/leads/${payload.leadId}`, {
+        params: { delete_lead: payload.deleteLead ? "true" : "false" },
+      });
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["email-chat-threads"] });
+      queryClient.removeQueries({ queryKey: ["email-chat-thread", vars.leadId] });
+      queryClient.invalidateQueries({ queryKey: ["email-conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["email-outreach-emails"] });
+      queryClient.invalidateQueries({ queryKey: ["leads"] });
+    },
+  });
+}
+
 export function useAgentStatus() {
   return useQuery({
     queryKey: ["agent-status"],
@@ -359,5 +534,37 @@ export function useOutreachNotifications() {
     },
     refetchInterval: 20000,
     retry: false,
+  });
+}
+
+export function useMarkLeadNotificationsRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (leadId: number) => {
+      await api.post(`/email-outreach/notifications/lead/${leadId}/read`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["outreach-notifications"] });
+    },
+  });
+}
+
+export function useSendLeadOutreach() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (leadId: number) => {
+      const { data } = await api.post<ManualLeadOutreachResponse>(
+        `/email-outreach/leads/${leadId}/send`
+      );
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["outreach-emails"] });
+      queryClient.invalidateQueries({ queryKey: ["email-outreach-dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["outreach-notifications"] });
+      queryClient.invalidateQueries({ queryKey: ["leads"] });
+      queryClient.invalidateQueries({ queryKey: ["saved-leads"] });
+    },
   });
 }

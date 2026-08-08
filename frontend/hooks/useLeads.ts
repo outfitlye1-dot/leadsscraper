@@ -58,6 +58,7 @@ export function useLeads(filters: LeadFilters = {}) {
       });
       return data;
     },
+    refetchInterval: 30000,
   });
 }
 
@@ -93,8 +94,10 @@ export function useUpdateLead() {
       const { data: lead } = await api.put<Lead>(`/leads/${id}`, data);
       return lead;
     },
-    onSuccess: (_, vars) => {
+    onSuccess: (lead, vars) => {
+      queryClient.setQueryData(["lead", vars.id], lead);
       queryClient.invalidateQueries({ queryKey: ["leads"] });
+      queryClient.invalidateQueries({ queryKey: ["saved-leads"] });
       queryClient.invalidateQueries({ queryKey: ["lead", vars.id] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
     },
@@ -144,9 +147,10 @@ export function useSaveLead() {
       const { data } = await api.post<Lead>(`/leads/${id}/save`);
       return data;
     },
-    onSuccess: () => {
+    onSuccess: (lead) => {
       queryClient.invalidateQueries({ queryKey: ["leads"] });
       queryClient.invalidateQueries({ queryKey: ["saved-leads"] });
+      queryClient.invalidateQueries({ queryKey: ["lead", lead.id] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
     },
   });
@@ -159,9 +163,10 @@ export function useUnsaveLead() {
       const { data } = await api.post<Lead>(`/leads/${id}/unsave`);
       return data;
     },
-    onSuccess: () => {
+    onSuccess: (lead) => {
       queryClient.invalidateQueries({ queryKey: ["leads"] });
       queryClient.invalidateQueries({ queryKey: ["saved-leads"] });
+      queryClient.invalidateQueries({ queryKey: ["lead", lead.id] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
     },
   });
@@ -186,7 +191,7 @@ export function useCleanupLeadsWithoutContact() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      const { data } = await api.post<{ kept: number; deleted: number }>(
+      const { data } = await api.post<{ saved?: number; kept: number; deleted: number }>(
         "/leads/cleanup-no-contact",
         {}
       );
@@ -194,6 +199,7 @@ export function useCleanupLeadsWithoutContact() {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["leads"] });
+      await queryClient.invalidateQueries({ queryKey: ["saved-leads"] });
       await queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
     },
   });
@@ -223,6 +229,7 @@ export function useSavedLeads(filters: LeadFilters = {}) {
       });
       return data;
     },
+    refetchInterval: 30000,
   });
 }
 

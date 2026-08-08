@@ -41,7 +41,7 @@ class OutreachWorker:
 
     def _run_loop(self) -> None:
         settings = get_settings()
-        idle_poll = max(settings.OUTREACH_WORKER_POLL_SECONDS, 15)
+        idle_poll = max(int(settings.OUTREACH_WORKER_POLL_SECONDS or 3), 2)
         while not self._stop.is_set():
             settings = get_settings()
             if not settings.OUTREACH_WORKER_ENABLED:
@@ -211,19 +211,42 @@ class OutreachWorker:
         if not account:
             raise ValueError("No email account")
 
-        lead = db.query(Lead).filter(Lead.id == conversation.lead_id).first()
+        lead = db.query(Lead).filter(
+            Lead.id == conversation.lead_id, Lead.user_id == user_id
+        ).first()
         to_email = lead.email if lead else ""
         if not to_email:
             return
 
-        message_id = send_email(account, to_email, draft.draft_subject, draft.draft_body)
+        from app.services.email_outreach.reply import ReplyService, _is_vague_filler
+
+        body = (draft.draft_body or "").strip()
+        if _is_vague_filler(body):
+            # Replace useless filler with a short Brain-based answer before send
+            reply_svc = ReplyService(db)
+            last_inbound = (
+                db.query(ConversationMessage)
+                .filter(
+                    ConversationMessage.conversation_id == conversation.id,
+                    ConversationMessage.direction == "inbound",
+                )
+                .order_by(ConversationMessage.received_at.desc())
+                .first()
+            )
+            body = reply_svc._contextual_fallback_body(
+                user_id, (last_inbound.body_text if last_inbound else "") or ""
+            )
+            draft.draft_body = body
+            db.commit()
+
+        message_id = send_email(account, to_email, draft.draft_subject, body)
         msg = ConversationMessage(
             conversation_id=conversation.id,
             direction="outbound",
             from_email=account.email_address,
             to_email=to_email,
             subject=draft.draft_subject,
-            body_text=draft.draft_body,
+            body_text=body,
             external_message_id=message_id,
         )
         db.add(msg)

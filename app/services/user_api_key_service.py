@@ -1,7 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.user_api_key import ApiKeyStatus, ApiProvider
 from app.repositories.user_api_key_repository import UserApiKeyRepository
 from app.schemas.user_api_key import (
@@ -17,6 +17,20 @@ from app.utils.api_key_utils import mask_api_key
 class UserApiKeyService:
     def __init__(self, db: Session):
         self.repo = UserApiKeyRepository(db)
+
+    def _scope(self, user: User) -> str:
+        """platform = admin shared pool; own = user keys."""
+        if user.role == UserRole.admin:
+            return "platform"
+        if user.own_api_keys_enabled:
+            return "own"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "You cannot manage API keys. Ask an admin to approve own-API access, "
+                "or use your daily platform tokens."
+            ),
+        )
 
     def _to_response(self, row) -> UserApiKeyResponse:
         data = {
@@ -35,10 +49,15 @@ class UserApiKeyService:
         return UserApiKeyResponse(**data)
 
     def list_keys(self, user: User, provider: ApiProvider | None = None) -> list[UserApiKeyResponse]:
-        rows = self.repo.list_by_user(user.id, provider)
+        scope = self._scope(user)
+        if scope == "platform":
+            rows = self.repo.list_platform_keys(provider)
+        else:
+            rows = self.repo.list_by_user(user.id, provider)
         return [self._to_response(r) for r in rows]
 
     def create_key(self, user: User, data: UserApiKeyCreateRequest) -> UserApiKeyResponse:
+        self._scope(user)
         api_key = data.api_key.strip()
         if len(api_key) < 8:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="API key too short")
@@ -56,6 +75,7 @@ class UserApiKeyService:
         return self._to_response(row)
 
     def bulk_create(self, user: User, data: UserApiKeyBulkCreateRequest) -> UserApiKeyBulkCreateResponse:
+        self._scope(user)
         cleaned = []
         seen: set[str] = set()
         for raw in data.api_keys:
@@ -93,18 +113,30 @@ class UserApiKeyService:
     def update_key(
         self, user: User, key_id: int, data: UserApiKeyUpdateRequest
     ) -> UserApiKeyResponse:
-        row = self.repo.get_by_id(user.id, key_id)
+        scope = self._scope(user)
+        if scope == "platform":
+            row = self.repo.get_platform_key_by_id(key_id)
+        else:
+            row = self.repo.get_by_id(user.id, key_id)
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
         updated = self.repo.update(row, data.model_dump(exclude_unset=True))
         return self._to_response(updated)
 
     def delete_key(self, user: User, key_id: int) -> None:
-        row = self.repo.get_by_id(user.id, key_id)
+        scope = self._scope(user)
+        if scope == "platform":
+            row = self.repo.get_platform_key_by_id(key_id)
+        else:
+            row = self.repo.get_by_id(user.id, key_id)
         if not row:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
         self.repo.delete(row)
 
     def reset_exhausted(self, user: User, provider: ApiProvider | None = None) -> dict:
-        count = self.repo.reset_exhausted(user.id, provider)
+        scope = self._scope(user)
+        if scope == "platform":
+            count = self.repo.reset_exhausted_platform(provider)
+        else:
+            count = self.repo.reset_exhausted(user.id, provider)
         return {"reset_count": count}

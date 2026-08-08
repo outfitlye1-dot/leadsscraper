@@ -8,11 +8,13 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import UserLoginRequest, UserRegisterRequest, UserResponse
+from app.schemas.user_serialize import to_user_response
 from app.utils.sqlite_retry import is_sqlite_locked_error, with_sqlite_retry
 
 
 class AuthService:
     def __init__(self, db: Session):
+        self.db = db
         self.user_repository = UserRepository(db)
 
     def register(self, data: UserRegisterRequest) -> UserResponse:
@@ -29,7 +31,7 @@ class AuthService:
                 email=data.email,
                 password_hash=get_password_hash(data.password),
             )
-            return UserResponse.model_validate(user)
+            return to_user_response(user, self.db)
 
         try:
             return with_sqlite_retry(_register)
@@ -76,4 +78,4 @@ class AuthService:
             raise
 
     def get_user_profile(self, user: User) -> UserResponse:
-        return UserResponse.model_validate(user)
+        return to_user_response(user, self.db)

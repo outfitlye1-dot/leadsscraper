@@ -53,7 +53,13 @@ api.interceptors.response.use(
     const status = error.response?.status;
     const requestUrl = error.config?.url || "";
 
-    if (status === 401) {
+    // Background keepalive must never force logout — backend restarts briefly return 401/500
+    const isBackgroundKeepalive =
+      requestUrl.includes("/scraper/background/heartbeat") ||
+      requestUrl.includes("/scraper/background/stop") ||
+      requestUrl.includes("/scraper/background/status");
+
+    if (status === 401 && !isBackgroundKeepalive) {
       handleUnauthorized(requestUrl);
     }
 

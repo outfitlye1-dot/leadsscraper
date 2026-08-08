@@ -27,6 +27,7 @@ class ScraperJobState:
     auto_kept_total: int = 0
     auto_deleted_total: int = 0
     auto_scraped_total: int = 0
+    agents: list[dict[str, Any]] = field(default_factory=list)
     logs: list[dict[str, Any]] = field(default_factory=list)
     log_seq: int = 0
     checkpoint: dict[str, Any] | None = None
@@ -136,6 +137,9 @@ class ScraperJobStore:
             job = self._jobs.get(job_id)
             if not job:
                 return
+            # Don't resurrect a user-stopped job
+            if job.cancel_requested or job.status == "cancelled":
+                return
             job.status = "completed"
             job.progress = 100
             job.stage = "done"
@@ -149,6 +153,8 @@ class ScraperJobStore:
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
+                return
+            if job.cancel_requested or job.status == "cancelled":
                 return
             job.status = "failed"
             job.stage = "error"
@@ -173,23 +179,55 @@ class ScraperJobStore:
             return True
 
     def request_cancel(self, job_id: str, user_id: int) -> bool:
+        """Hard-stop: mark cancelled immediately so UI and workers abort ASAP.
+
+        Idempotent: already-cancelled jobs owned by the user count as success.
+        """
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.user_id != user_id:
                 return False
-            if job.mode == "auto":
-                if job.status not in ("pending", "running"):
-                    return False
-                job.cancel_requested = True
-                job.message = "Stopping after current scrape round..."
-                job.updated_at = datetime.now(UTC)
+            if job.status == "cancelled" or job.cancel_requested:
+                self._clear_active_auto(job)
                 return True
             if job.status not in ("pending", "running", "paused"):
                 return False
             job.cancel_requested = True
-            job.message = "Cancelling scrape..."
+            job.pause_requested = False
+            job.status = "cancelled"
+            job.message = "Stopped"
+            job.progress = job.progress or 0
+            job.stage = "cancelled"
             job.updated_at = datetime.now(UTC)
+            self._clear_active_auto(job)
             return True
+
+    def cancel_active_auto_jobs(
+        self, user_id: int, *, message: str = "Replaced by a new auto scrape"
+    ) -> list[str]:
+        """Stop any active auto jobs for this user so auto/start never sticks on 409."""
+        cancelled: list[str] = []
+        with self._lock:
+            active_id = self._active_auto.get(user_id)
+            for job in list(self._jobs.values()):
+                if (
+                    job.user_id == user_id
+                    and job.mode == "auto"
+                    and (
+                        job.job_id == active_id
+                        or job.status in ("pending", "running", "paused")
+                    )
+                ):
+                    job.cancel_requested = True
+                    job.pause_requested = False
+                    job.status = "cancelled"
+                    job.stage = "cancelled"
+                    job.message = message
+                    job.updated_at = datetime.now(UTC)
+                    self._metrics.pop(job.job_id, None)
+                    cancelled.append(job.job_id)
+            self._active_auto.pop(user_id, None)
+        return cancelled
 
     def request_pause(self, job_id: str, user_id: int) -> bool:
         with self._lock:
@@ -247,6 +285,72 @@ class ScraperJobStore:
             job.auto_kept_total += kept
             job.auto_deleted_total += deleted
             job.updated_at = datetime.now(UTC)
+
+    def set_agents(self, job_id: str, agents: list[dict[str, Any]]) -> None:
+        """Replace the live agent roster for country multi-city auto."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            job.agents = [dict(a) for a in agents]
+            job.updated_at = datetime.now(UTC)
+
+    def update_agent(
+        self,
+        job_id: str,
+        agent_id: str,
+        *,
+        status: str | None = None,
+        keyword: str | None = None,
+        city: str | None = None,
+        message: str | None = None,
+        kept: int | None = None,
+        scraped: int | None = None,
+    ) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            for agent in job.agents:
+                if str(agent.get("id")) != str(agent_id):
+                    continue
+                if status is not None:
+                    agent["status"] = status
+                if keyword is not None:
+                    agent["keyword"] = keyword
+                if city is not None:
+                    agent["city"] = city
+                if message is not None:
+                    agent["message"] = message
+                if kept is not None:
+                    agent["kept"] = kept
+                if scraped is not None:
+                    agent["scraped"] = scraped
+                agent["updated_at"] = datetime.now(UTC).isoformat()
+                break
+            job.updated_at = datetime.now(UTC)
+
+    def cancel_active_manual_jobs(
+        self, user_id: int, *, message: str = "Replaced by a new scrape"
+    ) -> list[str]:
+        """Immediately free the user slot so a new Start never stuck on 409."""
+        cancelled: list[str] = []
+        with self._lock:
+            for job in list(self._jobs.values()):
+                if (
+                    job.user_id == user_id
+                    and job.mode == "single"
+                    and job.status in ("pending", "running", "paused")
+                ):
+                    job.cancel_requested = True
+                    job.pause_requested = False
+                    job.status = "cancelled"
+                    job.stage = "cancelled"
+                    job.message = message
+                    job.updated_at = datetime.now(UTC)
+                    self._metrics.pop(job.job_id, None)
+                    cancelled.append(job.job_id)
+        return cancelled
 
     def get_active_auto_job(self, user_id: int) -> ScraperJobState | None:
         with self._lock:
@@ -327,4 +431,4 @@ class ScraperJobStore:
             return True
 
 
-scraper_job_store = ScraperJobStore()
+scraper_job_store = ScraperJobStore()

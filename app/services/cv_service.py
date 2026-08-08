@@ -55,7 +55,7 @@ class CVService:
         from app.models.user_api_key import ApiProvider
 
         has_user_groq = bool(
-            UserApiKeyRepository(self.db).get_active_keys(user.id, ApiProvider.groq)
+            UserApiKeyRepository(self.db).get_active_platform_keys(ApiProvider.groq)
         )
 
         self.groq_service.user_id = user.id
@@ -106,7 +106,7 @@ class CVService:
         profile = CVProfileResponse.model_validate(cv)
         message = "CV uploaded and processed successfully"
         if not has_user_groq:
-            message = "CV uploaded. Add Groq API key in Settings for full AI profile parsing."
+            message = "CV uploaded. Admin must add a Groq API key for full AI profile parsing."
         return CVUploadResponse(message=message, profile=profile)
 
     @staticmethod

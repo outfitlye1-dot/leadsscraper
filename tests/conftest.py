@@ -87,10 +87,28 @@ def auth_headers(client):
 
 
 @pytest.fixture
-def groq_auth_headers(client, auth_headers):
-    client.post(
-        "/api/user-keys",
-        headers=auth_headers,
-        json={"provider": "groq", "api_key": "gsk_test_user_groq_key12"},
+def groq_auth_headers(client, auth_headers, db_session):
+    from app.models.user import User, UserRole
+    from app.models.user_api_key import ApiKeyStatus, ApiProvider, UserApiKey
+
+    admin = User(
+        name="Fixture Admin",
+        email="fixture-admin@example.com",
+        password_hash="x",
+        role=UserRole.admin,
     )
+    db_session.add(admin)
+    db_session.commit()
+    db_session.refresh(admin)
+    db_session.add(
+        UserApiKey(
+            user_id=admin.id,
+            provider=ApiProvider.groq,
+            label="Fixture Groq",
+            api_key="gsk_test_user_groq_key12",
+            priority=0,
+            status=ApiKeyStatus.active,
+        )
+    )
+    db_session.commit()
     return auth_headers

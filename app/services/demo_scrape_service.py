@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from app.scraper.metrics import ScrapeMetrics
 from app.schemas.common import DemoLeadItem, DemoScrapeResponse
-from app.services.enrichment_service import EnrichmentService
 from app.services.web_search_service import WebSearchService
 from app.utils.contact_utils import is_valid_email, is_whatsapp_ready
 from app.utils.scrape_defaults import normalize_location_alias, resolve_scrape_location
@@ -14,6 +14,8 @@ from app.utils.scrape_defaults import normalize_location_alias, resolve_scrape_l
 logger = logging.getLogger(__name__)
 
 DEMO_LEAD_LIMIT = 4
+# Keep under typical Next.js rewrite / browser proxy timeouts (~30–60s)
+DEMO_MAX_SECONDS = 15.0
 
 
 class DemoScrapeService:
@@ -27,13 +29,31 @@ class DemoScrapeService:
         metrics = ScrapeMetrics()
         web = WebSearchService()
 
-        try:
-            leads = web.search_leads(
+        def _search() -> list[dict]:
+            return web.search_leads(
                 keyword,
                 location,
                 DEMO_LEAD_LIMIT,
                 search_query=search_query,
                 metrics=metrics,
+                max_seconds=DEMO_MAX_SECONDS,
+                light=True,
+            )
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            fut = pool.submit(_search)
+            # Do NOT use `with ThreadPoolExecutor` — on timeout its shutdown(wait=True)
+            # blocks until the hung search finishes and defeats the whole budget.
+            leads = fut.result(timeout=DEMO_MAX_SECONDS + 3.0)
+        except FuturesTimeoutError:
+            logger.warning("Demo scrape timed out after %.0fs", DEMO_MAX_SECONDS)
+            return DemoScrapeResponse(
+                success=True,
+                count=0,
+                total_estimated=0,
+                message="Demo timed out — try again, or create an account for full scrapes.",
+                leads=[],
             )
         except Exception as exc:
             logger.warning("Demo scrape failed: %s", exc)
@@ -44,6 +64,8 @@ class DemoScrapeService:
                 message="Demo scrape failed. Please try again in a moment.",
                 leads=[],
             )
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
         if not leads:
             return DemoScrapeResponse(
@@ -54,11 +76,7 @@ class DemoScrapeService:
                 leads=[],
             )
 
-        try:
-            leads = EnrichmentService().enrich_leads_batch(leads[:DEMO_LEAD_LIMIT])
-        except Exception as exc:
-            logger.warning("Demo enrichment partial failure: %s", exc)
-
+        # Skip heavy enrichment on the public demo — stay fast for the landing proxy.
         items: list[DemoLeadItem] = []
         for lead in leads[:DEMO_LEAD_LIMIT]:
             email = lead.get("email")
@@ -90,8 +108,8 @@ class DemoScrapeService:
             )
 
         total_estimated = max(
-            metrics.pages_discovered * 4,
-            metrics.leads_parsed,
+            int(metrics.pages_discovered or 0) * 4,
+            int(metrics.leads_parsed or 0),
             len(items) * 12,
             len(items),
         )

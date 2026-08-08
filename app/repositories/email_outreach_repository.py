@@ -278,3 +278,91 @@ class EmailOutreachRepository:
             )
             .count()
         )
+
+    def get_lead_outreach_status_map(self, user_id: int, lead_ids: list[int]) -> dict[int, str]:
+        """Return per-lead outreach status: none | awaiting_reply | replied."""
+        from app.models.email_outreach import OutreachEmailStatus
+
+        if not lead_ids:
+            return {}
+
+        blocked_statuses = {
+            OutreachEmailStatus.sent,
+            OutreachEmailStatus.delivered,
+            OutreachEmailStatus.opened,
+            OutreachEmailStatus.queued,
+            OutreachEmailStatus.sending,
+        }
+
+        emails = (
+            self.db.query(OutreachEmail)
+            .filter(
+                OutreachEmail.user_id == user_id,
+                OutreachEmail.lead_id.in_(lead_ids),
+                OutreachEmail.follow_up_step == 0,
+            )
+            .order_by(OutreachEmail.created_at.desc())
+            .all()
+        )
+
+        result: dict[int, str] = {lead_id: "none" for lead_id in lead_ids}
+        seen: set[int] = set()
+
+        for email in emails:
+            if email.lead_id in seen:
+                continue
+
+            if email.status == OutreachEmailStatus.replied or email.replied_at:
+                seen.add(email.lead_id)
+                result[email.lead_id] = "replied"
+                continue
+
+            if email.status in blocked_statuses:
+                seen.add(email.lead_id)
+                result[email.lead_id] = "awaiting_reply"
+
+        return result
+
+    def get_lead_outreach_status_map(self, user_id: int, lead_ids: list[int]) -> dict[int, str]:
+        """Return per-lead outreach status: none | awaiting_reply | replied."""
+        from app.models.email_outreach import OutreachEmailStatus
+
+        if not lead_ids:
+            return {}
+
+        blocked_statuses = {
+            OutreachEmailStatus.sent,
+            OutreachEmailStatus.delivered,
+            OutreachEmailStatus.opened,
+            OutreachEmailStatus.queued,
+            OutreachEmailStatus.sending,
+        }
+
+        emails = (
+            self.db.query(OutreachEmail)
+            .filter(
+                OutreachEmail.user_id == user_id,
+                OutreachEmail.lead_id.in_(lead_ids),
+                OutreachEmail.follow_up_step == 0,
+            )
+            .order_by(OutreachEmail.created_at.desc())
+            .all()
+        )
+
+        result: dict[int, str] = {lead_id: "none" for lead_id in lead_ids}
+        seen: set[int] = set()
+
+        for email in emails:
+            if email.lead_id in seen:
+                continue
+
+            if email.status == OutreachEmailStatus.replied or email.replied_at:
+                seen.add(email.lead_id)
+                result[email.lead_id] = "replied"
+                continue
+
+            if email.status in blocked_statuses:
+                seen.add(email.lead_id)
+                result[email.lead_id] = "awaiting_reply"
+
+        return result

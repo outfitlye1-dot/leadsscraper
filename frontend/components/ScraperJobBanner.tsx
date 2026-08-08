@@ -1,16 +1,16 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Loader2, Square, X } from "lucide-react";
 import { useScraperJobStore } from "@/store/scraperJobStore";
-import { scraperStageLabel } from "@/lib/scraperStages";
 import { Button } from "@/components/ui/Button";
 
 export function ScraperJobBanner() {
+  const pathname = usePathname();
   const jobStatus = useScraperJobStore((s) => s.jobStatus);
   const isAutoMode = useScraperJobStore((s) => s.isAutoMode);
   const progress = useScraperJobStore((s) => s.progress);
-  const stage = useScraperJobStore((s) => s.stage);
   const progressMessage = useScraperJobStore((s) => s.progressMessage);
   const iteration = useScraperJobStore((s) => s.iteration);
   const autoKeptTotal = useScraperJobStore((s) => s.autoKeptTotal);
@@ -21,7 +21,7 @@ export function ScraperJobBanner() {
   const clearJob = useScraperJobStore((s) => s.clearJob);
   const stopAutoScrape = useScraperJobStore((s) => s.stopAutoScrape);
 
-  if (jobStatus === "idle") return null;
+  if (pathname !== "/scraper" || jobStatus === "idle") return null;
 
   const isRunning = jobStatus === "loading";
 
@@ -56,7 +56,7 @@ export function ScraperJobBanner() {
               {isRunning
                 ? isAutoMode
                   ? `${progressMessage || "Working..."}${autoKeptTotal > 0 ? ` · ${autoKeptTotal} phone leads kept` : ""}`
-                  : `${scraperStageLabel(stage)} · ${progressMessage || "Working..."}`
+                  : progressMessage || "Working..."
                 : jobStatus === "success"
                   ? isAutoMode
                     ? progressMessage || `${autoKeptTotal} phone leads kept, ${autoDeletedTotal} removed`
@@ -83,10 +83,9 @@ export function ScraperJobBanner() {
               variant="destructive"
               size="sm"
               onClick={() => void stopAutoScrape()}
-              disabled={cancelRequested}
             >
               <Square className="mr-1.5 h-3 w-3" />
-              {cancelRequested ? "Stopping..." : "Stop auto"}
+              Stop
             </Button>
           ) : null}
           <Link href="/scraper">

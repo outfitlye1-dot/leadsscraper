@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import api from "@/lib/api";
-import { removeToken, setToken } from "@/lib/auth";
+import { getToken, removeToken, setToken } from "@/lib/auth";
 import type { TokenResponse, User } from "@/lib/types";
 
 type OtpPurpose = "login" | "register" | "reset_password";
@@ -92,7 +92,14 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
-        void api.post("/scraper/background/stop").catch(() => undefined);
+        if (getToken()) {
+          void api.post("/scraper/background/stop").catch(() => undefined);
+        }
+        // Drop scrape UI so the next account never inherits this session's job banner
+        void import("@/store/scraperJobStore").then(({ useScraperJobStore }) => {
+          useScraperJobStore.getState().clearJob();
+          useScraperJobStore.getState().syncOwner(null);
+        });
         removeToken();
         set({ user: null, isAuthenticated: false });
       },

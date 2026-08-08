@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Download, Filter, Plus, Search, Upload, Bookmark, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Download, Filter, Plus, Search, Upload, Bookmark, MessageCircle, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import {
   useLeads,
@@ -18,7 +19,6 @@ import {
   type LeadFilters,
 } from "@/hooks/useLeads";
 import { ResizableTable } from "@/components/ui/resizable-table";
-import { LeadDetailDrawer } from "@/components/LeadDetailDrawer";
 import { LeadFormModal } from "@/components/LeadFormModal";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/PageHeader";
@@ -27,6 +27,7 @@ import { Select } from "@/components/ui/Select";
 import { TableSkeleton } from "@/components/Loader";
 import { PageError } from "@/components/PageError";
 import type { Lead, LeadStatus } from "@/lib/types";
+import { formatApiError } from "@/lib/utils";
 import axios from "axios";
 
 function useDebouncedValue<T>(value: T, delay = 350): T {
@@ -39,6 +40,7 @@ function useDebouncedValue<T>(value: T, delay = 350): T {
 }
 
 export default function LeadsPage() {
+  const router = useRouter();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<LeadStatus | "">("");
   const [city, setCity] = useState("");
@@ -54,7 +56,6 @@ export default function LeadsPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
 
-  const [detailLead, setDetailLead] = useState<Lead | null>(null);
   const [formLead, setFormLead] = useState<Lead | null>(null);
   const [formOpen, setFormOpen] = useState(false);
 
@@ -100,7 +101,6 @@ export default function LeadsPage() {
     if (!confirm("Delete this lead? Saved leads are protected.")) return;
     try {
       await deleteLead.mutateAsync({ id });
-      if (detailLead?.id === id) setDetailLead(null);
       toast.success("Lead deleted");
     } catch {
       toast.error("Failed to delete lead");
@@ -110,7 +110,6 @@ export default function LeadsPage() {
   const handleSave = async (id: number) => {
     try {
       await saveLead.mutateAsync(id);
-      if (detailLead?.id === id) setDetailLead(null);
       toast.success("Lead saved — moved to Saved");
     } catch {
       toast.error("Failed to save lead");
@@ -131,17 +130,21 @@ export default function LeadsPage() {
     if (!confirm(`Delete ${ids.length} selected lead${ids.length !== 1 ? "s" : ""}?`)) return;
     try {
       const deleted = await bulkDeleteLeads.mutateAsync({ ids, filters: listFilters });
-      toast.success(`${deleted} lead${deleted !== 1 ? "s" : ""} deleted`);
+      if (deleted === 0) {
+        toast.info("No matching leads to delete");
+      } else {
+        toast.success(`${deleted} lead${deleted !== 1 ? "s" : ""} deleted`);
+      }
       setPage(1);
-    } catch {
-      toast.error("Failed to delete selected leads");
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, "Failed to delete selected leads"));
     }
   };
 
   const handleCleanupNoContact = async () => {
     if (
       !confirm(
-        "Leads with a phone number will stay in Leads. Leads with only email (no number) or no contact will be deleted."
+        "WhatsApp / Offer Website wale leads (phone, no website) Leads page pe reh jayenge. Baqi (no phone ya with website) delete ho jayenge. Continue?"
       )
     ) {
       return;
@@ -154,15 +157,15 @@ export default function LeadsPage() {
         toast.info("No inbox leads to process");
       } else if (result.deleted === 0) {
         toast.info(
-          `No leads deleted — all ${result.kept} inbox lead${result.kept !== 1 ? "s" : ""} already have a phone number`
+          `No leads deleted — ${result.kept} contact lead${result.kept !== 1 ? "s" : ""} kept on Leads`
         );
       } else {
         const parts: string[] = [];
+        if (result.kept > 0) {
+          parts.push(`${result.kept} kept on Leads`);
+        }
         if (result.deleted > 0) {
           parts.push(`${result.deleted} deleted`);
-        }
-        if (result.kept > 0) {
-          parts.push(`${result.kept} kept in Leads`);
         }
         toast.success(parts.join(", "));
       }
@@ -220,16 +223,6 @@ export default function LeadsPage() {
       setPage(1);
     } catch {
       toast.error("Import failed — check CSV format");
-    }
-  };
-
-  const handleSaveDetail = async (id: number, patch: { status?: LeadStatus; notes?: string }) => {
-    try {
-      const updated = await updateLead.mutateAsync({ id, data: patch });
-      setDetailLead(updated);
-      toast.success("Lead updated");
-    } catch {
-      toast.error("Failed to update lead");
     }
   };
 
@@ -295,9 +288,14 @@ export default function LeadsPage() {
             variant="outline"
             onClick={handleCleanupNoContact}
             isLoading={cleanupNoContact.isPending}
+            title="Keep WhatsApp/Offer leads on Leads; delete the rest"
+            className="gap-2"
           >
-            <Trash2 className="h-4 w-4" />
-            Remove no contact
+            <span className="flex items-center gap-1">
+              <MessageCircle className="h-3.5 w-3.5" />
+              <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+            </span>
+            Keep contact / Delete rest
           </Button>
           <Button
             variant="outline"
@@ -489,7 +487,7 @@ export default function LeadsPage() {
           total={data?.total || 0}
           pageSize={data?.page_size || 10}
           onPageChange={setPage}
-          onLeadClick={(lead) => setDetailLead(lead)}
+          onLeadClick={(lead) => router.push(`/leads/${lead.id}`)}
           onSave={handleSave}
           onBulkSave={handleBulkSave}
           onDelete={handleDelete}
@@ -500,19 +498,6 @@ export default function LeadsPage() {
           isSaving={isSaving}
         />
       )}
-
-      <LeadDetailDrawer
-        lead={detailLead}
-        open={!!detailLead}
-        onClose={() => setDetailLead(null)}
-        onSave={handleSaveDetail}
-        onEditFull={(lead) => {
-          setDetailLead(null);
-          setFormLead(lead);
-          setFormOpen(true);
-        }}
-        isSaving={updateLead.isPending}
-      />
 
       <LeadFormModal
         open={formOpen}

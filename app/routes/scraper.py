@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
+import logging
 
 from app.core.auth import get_current_user
 from app.database.database import get_db
@@ -13,6 +14,7 @@ from app.schemas.common import (
     DemoScrapeRequest,
     DemoScrapeResponse,
     ScrapeMetricsResponse,
+    ScraperAgentStatus,
     ScraperJobControlResponse,
     ScraperJobHistoryResponse,
     ScraperJobStartResponse,
@@ -36,6 +38,7 @@ from app.services.scraper_runner import (
 )
 from app.utils.demo_rate_limit import allow_demo_request
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scraper", tags=["scraper"])
 
 
@@ -52,7 +55,17 @@ def demo_scrape(data: DemoScrapeRequest, request: Request) -> DemoScrapeResponse
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Demo limit reached. Create a free account for unlimited scraping.",
         )
-    return DemoScrapeService().run(data.keyword, data.location)
+    try:
+        return DemoScrapeService().run(data.keyword, data.location)
+    except Exception as exc:
+        logger.exception("Demo scrape route failed: %s", exc)
+        return DemoScrapeResponse(
+            success=False,
+            count=0,
+            total_estimated=0,
+            message="Demo scrape failed. Please try again in a moment.",
+            leads=[],
+        )
 
 
 @router.get(
@@ -128,6 +141,8 @@ def start_auto_scraper(
         current_user.id,
         data,
         interval_seconds=data.interval_seconds,
+        country=data.country,
+        parallel_agents=data.parallel_agents,
     )
     return ScraperJobStartResponse(job_id=job_id)
 
@@ -145,14 +160,9 @@ def stop_auto_scraper(
     current_user: User = Depends(get_current_user),
 ) -> AutoScrapeStopResponse:
     stopped = stop_auto_scraper_job(current_user.id)
-    if not stopped:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No auto scraping job is running.",
-        )
     return AutoScrapeStopResponse(
         success=True,
-        message="Stopping auto scrape after the current round finishes.",
+        message="Stopped" if stopped else "Already stopped",
     )
 
 
@@ -189,13 +199,22 @@ def get_auto_scraper_status(
 @router.post(
     "/background/heartbeat",
     response_model=BackgroundScrapeStatusResponse,
-    summary="Keep silent background scraper alive while logged in",
+    summary="Session keepalive for background scraper (does not auto-start)",
 )
 def background_scraper_heartbeat(
     current_user: User = Depends(get_current_user),
 ) -> BackgroundScrapeStatusResponse:
-    ensure_background_scraper(current_user.id)
-    return BackgroundScrapeStatusResponse(**background_scrape_store.get_status(current_user.id))
+    try:
+        # Keepalive only — never start scrapes for every logged-in account
+        ensure_background_scraper(current_user.id, start_if_stopped=False)
+        return BackgroundScrapeStatusResponse(**background_scrape_store.get_status(current_user.id))
+    except Exception as exc:
+        logger.warning("Background heartbeat soft-fail for user %s: %s", current_user.id, exc)
+        return BackgroundScrapeStatusResponse(
+            active=True,
+            running=False,
+            message="Heartbeat deferred",
+        )
 
 
 @router.post(
@@ -206,7 +225,10 @@ def background_scraper_heartbeat(
 def stop_background_scraper_route(
     current_user: User = Depends(get_current_user),
 ) -> AutoScrapeStopResponse:
-    stop_background_scraper(current_user.id)
+    try:
+        stop_background_scraper(current_user.id)
+    except Exception as exc:
+        logger.warning("Background stop soft-fail for user %s: %s", current_user.id, exc)
     return AutoScrapeStopResponse(success=True, message="Background scraper stopped.")
 
 
@@ -218,8 +240,16 @@ def stop_background_scraper_route(
 def get_background_scraper_status(
     current_user: User = Depends(get_current_user),
 ) -> BackgroundScrapeStatusResponse:
-    ensure_background_scraper(current_user.id)
-    return BackgroundScrapeStatusResponse(**background_scrape_store.get_status(current_user.id))
+    try:
+        # Read-only — do not start/restart the worker on every status poll
+        return BackgroundScrapeStatusResponse(**background_scrape_store.get_status(current_user.id))
+    except Exception as exc:
+        logger.warning("Background status soft-fail for user %s: %s", current_user.id, exc)
+        return BackgroundScrapeStatusResponse(
+            active=False,
+            running=False,
+            message="Unavailable",
+        )
 
 
 def _job_to_response(job) -> ScraperJobStatusResponse:
@@ -230,6 +260,13 @@ def _job_to_response(job) -> ScraperJobStatusResponse:
     metrics = scraper_job_store.get_metrics(job.job_id)
     if metrics:
         live_metrics = ScrapeMetricsResponse(**build_scrape_dashboard(metrics))
+    raw_agents = list(getattr(job, "agents", None) or [])
+    agents = []
+    for raw in raw_agents:
+        try:
+            agents.append(ScraperAgentStatus(**raw))
+        except Exception:
+            continue
     return ScraperJobStatusResponse(
         job_id=job.job_id,
         status=job.status,
@@ -248,6 +285,7 @@ def _job_to_response(job) -> ScraperJobStatusResponse:
         live_metrics=live_metrics,
         failed_urls=list(getattr(job, "failed_urls", []) or [])[:50],
         logs=job.logs,
+        agents=agents,
     )
 
 
@@ -279,9 +317,14 @@ def resume_scraper_job(job_id: str, current_user: User = Depends(get_current_use
     summary="Cancel a scrape job",
 )
 def cancel_scraper_job(job_id: str, current_user: User = Depends(get_current_user)):
+    # Idempotent: stale/localStorage job ids after restart should not break Stop
     if not scraper_job_store.request_cancel(job_id, current_user.id):
-        raise HTTPException(status_code=404, detail="Job not found or cannot be cancelled")
-    return ScraperJobControlResponse(success=True, message="Cancellation requested", job_id=job_id)
+        return ScraperJobControlResponse(
+            success=True,
+            message="Already stopped",
+            job_id=job_id,
+        )
+    return ScraperJobControlResponse(success=True, message="Stopped", job_id=job_id)
 
 
 @router.get(

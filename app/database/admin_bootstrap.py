@@ -4,10 +4,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import get_password_hash
-from app.models.user import User, UserRole
+from app.models.user import UserRole
 from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
+
+LEGACY_ADMIN_EMAIL = "admin@leadgen.local"
 
 
 def ensure_admin_user(db: Session) -> None:
@@ -18,7 +20,21 @@ def ensure_admin_user(db: Session) -> None:
         return
 
     repo = UserRepository(db)
+    legacy = repo.get_by_email(LEGACY_ADMIN_EMAIL)
     user = repo.get_by_email(email)
+
+    if legacy and user and legacy.id != user.id:
+        repo.delete_user(legacy)
+        logger.info("Removed legacy admin account %s (using %s)", LEGACY_ADMIN_EMAIL, email)
+        user = repo.get_by_email(email)
+    elif legacy and not user:
+        legacy.email = email
+        legacy.role = UserRole.admin
+        legacy.password_hash = get_password_hash(password)
+        db.commit()
+        logger.info("Migrated legacy admin email to %s", email)
+        return
+
     if user:
         changed = False
         if user.role != UserRole.admin:

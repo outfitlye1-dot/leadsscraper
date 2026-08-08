@@ -21,6 +21,7 @@ from app.utils.prompts import (
     BRAIN_GENERATION_PROMPT,
     CV_SCRAPE_SUGGEST_PROMPT,
 )
+from app.utils.customer_language import language_rules_for_country
 from app.utils.outreach_tone import (
     OUTREACH_MAX_CHARS,
     sanitize_paid_outreach_message,
@@ -42,14 +43,18 @@ class GroqService:
         *,
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        fast: bool = False,
     ) -> str:
         settings = get_settings()
         model = settings.GROQ_MODEL
         last_error: Exception | None = None
+        attempts = 2 if fast else 3
+        timeout = 18.0 if fast else 45.0
+        client_retries = 0 if fast else 2
 
-        for attempt in range(3):
+        for attempt in range(attempts):
             try:
-                client = Groq(api_key=api_key, max_retries=2, timeout=45.0)
+                client = Groq(api_key=api_key, max_retries=client_retries, timeout=timeout)
                 kwargs: dict = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
@@ -66,7 +71,7 @@ class GroqService:
                 )
             except APIError as exc:
                 last_error = exc
-                if is_transient_api_error(exc) and attempt < 2:
+                if (not fast) and is_transient_api_error(exc) and attempt < attempts - 1:
                     time.sleep(1.2 * (attempt + 1))
                     continue
                 raise HTTPException(
@@ -75,7 +80,7 @@ class GroqService:
                 )
             except Exception as exc:
                 last_error = exc
-                if is_transient_api_error(exc) and attempt < 2:
+                if (not fast) and is_transient_api_error(exc) and attempt < attempts - 1:
                     time.sleep(1.2 * (attempt + 1))
                     continue
                 raise HTTPException(
@@ -94,6 +99,7 @@ class GroqService:
         *,
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        fast: bool = False,
     ) -> str:
         if self.db is None or self.user_id is None:
             raise HTTPException(
@@ -108,7 +114,11 @@ class GroqService:
             self.user_id,
             ApiProvider.groq,
             lambda api_key: self._raw_chat(
-                api_key, prompt, max_tokens=max_tokens, temperature=temperature
+                api_key,
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                fast=fast,
             ),
         )
 
@@ -253,6 +263,11 @@ class GroqService:
             prompts[message_type],
             lead_info=lead_info,
             cv_profile=cv_profile,
+            language_rules=language_rules_for_country(
+                lead.country,
+                lead.city,
+                channel="whatsapp" if message_type == MessageType.whatsapp else message_type.value,
+            ),
         )
         result = self._chat(
             prompt,
@@ -303,7 +318,7 @@ class GroqService:
         from app.repositories.user_api_key_repository import UserApiKeyRepository
 
         return bool(
-            UserApiKeyRepository(self.db).get_active_keys(self.user_id, ApiProvider.groq)
+            UserApiKeyRepository(self.db).get_active_platform_keys(ApiProvider.groq)
         )
 
     def optimize_search_query(self, query: str, location: str | None = None) -> dict:
@@ -384,17 +399,28 @@ class GroqService:
             )
         return system_prompt
 
-    def suggest_scrape_from_profile(self, profile: dict, scrape_source: str = "all") -> dict:
+    def suggest_scrape_from_profile(
+        self,
+        profile: dict,
+        scrape_source: str = "all",
+        *,
+        website_preference: str = "without_website",
+    ) -> dict:
         if not self._has_groq_access():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Groq API key required. Add your key in Settings → API Keys.",
             )
 
+        pref = (website_preference or "without_website").strip().lower()
+        if pref not in {"without_website", "with_website", "all"}:
+            pref = "without_website"
+
         prompt = safe_prompt_format(
             CV_SCRAPE_SUGGEST_PROMPT,
             profile=json.dumps(profile, indent=2, default=str),
             scrape_source=scrape_source,
+            website_preference=pref,
         )
         try:
             result = self._chat(prompt)
@@ -407,7 +433,7 @@ class GroqService:
                 ).strip(),
                 "keyword_suggestions": [
                     str(s).strip() for s in (parsed.get("keyword_suggestions") or []) if str(s).strip()
-                ][:5],
+                ][:6],
                 "location_suggestions": [],
                 "search_queries": [
                     str(s).strip() for s in (parsed.get("search_queries") or []) if str(s).strip()

@@ -7,16 +7,19 @@ import re
 
 from sqlalchemy.orm import Session
 
-from app.models.brain import Brain
 from app.models.lead import Lead
-from app.repositories.brain_repository import BrainRepository
-from app.repositories.cv_repository import CVRepository
 from app.services.groq_service import GroqService
-from app.utils.outreach_tone import sanitize_paid_outreach_message, trim_outreach_message, CLIENT_PRICING_RULES
+from app.utils.customer_language import language_rules_for_country
+from app.utils.outreach_tone import (
+    FIRST_MESSAGE_OUTREACH_RULES,
+    sanitize_paid_outreach_message,
+    trim_outreach_message,
+)
 from app.utils.prompt_format import safe_prompt_format
+from app.services.email_outreach.sender_profile import build_sender_business_context
 
 
-OUTREACH_EMAIL_PROMPT = """You are writing a short, human outreach email for a freelancer/agency selling paid digital services to a local small business.
+OUTREACH_EMAIL_PROMPT = """You are writing a short FIRST outreach email for a freelancer/agency selling paid digital services to a local small business.
 
 SENDER PROFILE:
 {sender_profile}
@@ -32,13 +35,19 @@ LEAD CONTEXT:
 - Recommended service: {recommended_service}
 - Previous interactions: {previous_interactions}
 
+{language_rules}
+
 RULES:
 - Write like a real person, not a marketing template
 - Keep body under 90 words
-- Paid services only — never offer free audits, trials, or quotes
-""" + CLIENT_PRICING_RULES + """
+- Use the greeting from LANGUAGE rules (even if no personal name)
+- Introduce who you are + what work you do for businesses like theirs
+- Soft CTA only (chat / how you can help)
+- DO NOT mention any price, fee, package cost, or number in this first email
+- Pricing comes later only when THEY ask
+{first_message_rules}
 - Reference something specific about their business when possible
-- Casual-professional tone
+- Casual-professional tone — contractions, short lines, human touch
 - No buzzwords or corporate fluff
 {follow_up_hint}
 
@@ -52,28 +61,9 @@ class EmailGenerationService:
         self.db = db
         self.user_id = user_id
         self.groq = GroqService(db, user_id)
-        self.brain_repo = BrainRepository(db)
-        self.cv_repo = CVRepository(db)
 
     def _sender_profile(self) -> str:
-        brain: Brain | None = self.brain_repo.get_by_user(self.user_id)
-        cv = self.cv_repo.get_latest_by_user(self.user_id)
-        parts: list[str] = []
-        if brain:
-            if brain.professional_summary:
-                parts.append(brain.professional_summary)
-            if brain.services:
-                parts.append(f"Services: {', '.join(brain.services[:8])}")
-            if brain.skills:
-                parts.append(f"Skills: {', '.join(brain.skills[:8])}")
-        if cv:
-            if cv.professional_summary:
-                parts.append(cv.professional_summary)
-            if cv.services:
-                parts.append(f"Services: {', '.join(cv.services[:8])}")
-            if cv.skills:
-                parts.append(f"Skills: {', '.join(cv.skills[:8])}")
-        return "\n".join(parts) or "Digital services freelancer"
+        return build_sender_business_context(self.db, self.user_id)
 
     def _pain_points(self, lead: Lead) -> str:
         problems = lead.website_problems or []
@@ -144,11 +134,13 @@ class EmailGenerationService:
             industry=lead.industry or lead.category or "local business",
             website=lead.website or "none",
             location=f"{lead.city or ''}, {lead.country or ''}".strip(", "),
+            language_rules=language_rules_for_country(lead.country, lead.city, channel="email"),
             pain_points=self._pain_points(lead),
             buying_intent=f"Score {lead.buying_intent_score or 0}/100 ({lead.intent_tier or 'unknown'})",
             recommended_service=lead.recommended_service or lead.recommended_offer or "web presence improvement",
             previous_interactions=self._previous_interactions(lead),
             follow_up_hint=follow_up_hint,
+            first_message_rules=FIRST_MESSAGE_OUTREACH_RULES,
         )
 
         raw = self.groq._chat(prompt, max_tokens=400, temperature=0.88)
@@ -158,10 +150,15 @@ class EmailGenerationService:
         return subject, body
 
     def _parse_response(self, raw: str) -> tuple[str, str]:
+        from app.utils.chat_message_body import extract_subject_and_body
+
         text = raw.strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
             text = re.sub(r"\s*```$", "", text)
+        embedded_subj, body = extract_subject_and_body(text)
+        if body and (embedded_subj or '"body"' in text.lower()):
+            return (embedded_subj or "Following up").strip(), body
         try:
             data = json.loads(text)
             return str(data.get("subject", "")), str(data.get("body", ""))

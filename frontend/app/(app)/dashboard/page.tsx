@@ -138,7 +138,7 @@ export default function DashboardPage() {
                       style={{ width: `${Math.max(progress, 4)}%` }}
                     />
                   </div>
-                  <Link href="/scraper">
+                  <Link href="/scraper" className="mt-3 block">
                     <Button variant="outline" size="sm" className="w-full gap-1.5">
                       Open scraper
                       <ArrowRight className="h-3.5 w-3.5" />

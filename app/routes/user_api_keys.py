@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/user-keys", tags=["user-keys"])
 @router.get(
     "",
     response_model=list[UserApiKeyResponse],
-    summary="List your API keys (masked)",
+    summary="List API keys (admin platform or approved own keys)",
 )
 def list_user_keys(
     provider: ApiProvider | None = Query(None),
@@ -48,7 +48,7 @@ def create_user_key(
     "/bulk",
     response_model=UserApiKeyBulkCreateResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Add multiple API keys at once",
+    summary="Add multiple API keys",
 )
 def bulk_create_user_keys(
     data: UserApiKeyBulkCreateRequest,
@@ -61,7 +61,7 @@ def bulk_create_user_keys(
 @router.put(
     "/{key_id}",
     response_model=UserApiKeyResponse,
-    summary="Update API key label, priority, or status",
+    summary="Update API key",
 )
 def update_user_key(
     key_id: int,

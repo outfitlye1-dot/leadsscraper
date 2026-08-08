@@ -42,6 +42,10 @@ class ScrapeMetrics:
         with self._lock:
             setattr(self, field_name, getattr(self, field_name) + amount)
 
+    def set(self, field_name: str, value: int | float) -> None:
+        with self._lock:
+            setattr(self, field_name, value)
+
     def add_error(self, message: str) -> None:
         with self._lock:
             if len(self.validation_errors) < 100:

@@ -5,13 +5,20 @@ import axios from "axios";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { formatApiDetail, formatApiError } from "@/lib/utils";
-import type { ScraperJobStatusResponse, ScraperLogEntry, ScraperResponse, ScrapeMetricsResponse } from "@/lib/types";
+import type {
+  ScraperAgentStatus,
+  ScraperJobStatusResponse,
+  ScraperLogEntry,
+  ScraperResponse,
+  ScrapeMetricsResponse,
+} from "@/lib/types";
 
 export type ScraperJobUiStatus = "idle" | "loading" | "success" | "failed";
 
-const POLL_INTERVAL_MS = 1500;
+const POLL_INTERVAL_MS = 3000;
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+let pollGeneration = 0;
 let queryClient: QueryClient | null = null;
 let lastAutoInvalidationIteration = 0;
 
@@ -20,6 +27,8 @@ export function bindScraperQueryClient(client: QueryClient) {
 }
 
 function stopPolling() {
+  // Invalidate in-flight pollOnce calls + orphaned HMR intervals
+  pollGeneration += 1;
   if (pollInterval) {
     clearInterval(pollInterval);
     pollInterval = null;
@@ -35,6 +44,7 @@ function invalidateAfterScrape() {
 
 interface ScraperJobState {
   jobId: string | null;
+  ownerUserId: number | null;
   isAutoMode: boolean;
   jobStatus: ScraperJobUiStatus;
   progress: number;
@@ -48,8 +58,10 @@ interface ScraperJobState {
   errorMsg: string;
   isSubmitting: boolean;
   logs: ScraperLogEntry[];
+  agents: ScraperAgentStatus[];
   liveMetrics: ScrapeMetricsResponse | null;
   jobApiStatus: ScraperJobStatusResponse["status"] | null;
+  syncOwner: (userId: number | null) => void;
   trackJob: (jobId: string, initialMessage?: string, auto?: boolean) => void;
   recoverActiveJob: () => Promise<boolean>;
   stopAutoScrape: () => Promise<void>;
@@ -64,9 +76,11 @@ interface ScraperJobState {
 export const useScraperJobStore = create<ScraperJobState>()(
   persist(
     (set, get) => {
-      const pollOnce = async (jobId: string) => {
+      const pollOnce = async (jobId: string, generation: number) => {
+        if (generation !== pollGeneration || get().jobId !== jobId) return;
         try {
           const { data } = await api.get<ScraperJobStatusResponse>(`/scraper/jobs/${jobId}`);
+          if (generation !== pollGeneration || get().jobId !== jobId) return;
           const isAuto = data.mode === "auto";
 
           set({
@@ -79,6 +93,7 @@ export const useScraperJobStore = create<ScraperJobState>()(
             autoDeletedTotal: data.auto_deleted_total ?? 0,
             cancelRequested: data.cancel_requested ?? false,
             logs: data.logs ?? [],
+            agents: data.agents ?? [],
             liveMetrics: data.live_metrics ?? null,
             jobApiStatus: data.status,
           });
@@ -117,6 +132,22 @@ export const useScraperJobStore = create<ScraperJobState>()(
             return;
           }
 
+          if (data.status === "cancelled") {
+            stopPolling();
+            set({
+              jobId: null,
+              jobStatus: "idle",
+              isSubmitting: false,
+              cancelRequested: true,
+              progressMessage: data.message || "Stopped",
+              stage: "cancelled",
+              jobApiStatus: "cancelled",
+            });
+            toast.message("Scrape stopped");
+            invalidateAfterScrape();
+            return;
+          }
+
           if (data.status === "failed") {
             stopPolling();
             const message = formatApiDetail(data.error) || data.message || "Scraping failed";
@@ -129,9 +160,27 @@ export const useScraperJobStore = create<ScraperJobState>()(
             toast.error(message);
           }
         } catch (err: unknown) {
+          if (generation !== pollGeneration || get().jobId !== jobId) return;
           stopPolling();
           if (axios.isAxiosError(err) && err.response?.status === 404) {
+            // Job lost after backend restart/reload — drop stale localStorage job
             get().clearJob();
+            toast.message("Previous scrape expired — start again");
+            return;
+          }
+          // Transient proxy/backend reloads — keep job, retry shortly
+          if (
+            axios.isAxiosError(err) &&
+            (!err.response || err.response.status >= 500)
+          ) {
+            const gen = pollGeneration;
+            pollInterval = setInterval(() => {
+              if (get().jobId !== jobId || gen !== pollGeneration) {
+                stopPolling();
+                return;
+              }
+              void pollOnce(jobId, gen);
+            }, POLL_INTERVAL_MS * 2);
             return;
           }
           const message = formatApiError(err, "Failed to fetch scraper progress");
@@ -147,12 +196,20 @@ export const useScraperJobStore = create<ScraperJobState>()(
 
       const startPolling = (jobId: string) => {
         stopPolling();
-        void pollOnce(jobId);
-        pollInterval = setInterval(() => void pollOnce(jobId), POLL_INTERVAL_MS);
+        const generation = pollGeneration;
+        void pollOnce(jobId, generation);
+        pollInterval = setInterval(() => {
+          if (get().jobId !== jobId) {
+            stopPolling();
+            return;
+          }
+          void pollOnce(jobId, generation);
+        }, POLL_INTERVAL_MS);
       };
 
       return {
         jobId: null,
+        ownerUserId: null,
         isAutoMode: false,
         jobStatus: "idle",
         progress: 0,
@@ -166,8 +223,23 @@ export const useScraperJobStore = create<ScraperJobState>()(
         errorMsg: "",
         isSubmitting: false,
         logs: [],
+        agents: [],
         liveMetrics: null,
         jobApiStatus: null,
+
+        syncOwner: (userId: number | null) => {
+          const { ownerUserId, jobId, clearJob } = get();
+          if (userId == null) {
+            if (jobId || ownerUserId != null) clearJob();
+            set({ ownerUserId: null });
+            return;
+          }
+          if (ownerUserId != null && ownerUserId !== userId) {
+            // Another account's persisted scrape UI — drop it so it cannot look shared
+            clearJob();
+          }
+          set({ ownerUserId: userId });
+        },
 
         resetForNewRun: (auto = false) => {
           lastAutoInvalidationIteration = 0;
@@ -185,6 +257,7 @@ export const useScraperJobStore = create<ScraperJobState>()(
             autoDeletedTotal: 0,
             cancelRequested: false,
             logs: [],
+            agents: [],
           });
         },
 
@@ -205,6 +278,7 @@ export const useScraperJobStore = create<ScraperJobState>()(
             autoDeletedTotal: 0,
             cancelRequested: false,
             logs: [{ seq: 0, ts: new Date().toISOString(), level: "info", stage: "init", text: initialMessage }],
+            agents: [],
           });
           startPolling(jobId);
         },
@@ -226,12 +300,29 @@ export const useScraperJobStore = create<ScraperJobState>()(
         },
 
         stopAutoScrape: async () => {
+          const { jobId } = get();
+          // Optimistic UI — stop immediately in the client
+          stopPolling();
+          set({
+            jobId: null,
+            cancelRequested: true,
+            isSubmitting: false,
+            isAutoMode: false,
+            jobStatus: "idle",
+            progressMessage: "Stopped",
+            stage: "cancelled",
+            jobApiStatus: "cancelled",
+          });
           try {
-            await api.post("/scraper/auto/stop");
-            set({ cancelRequested: true, progressMessage: "Stopping after current round..." });
-            toast.message("Auto scrape will stop after this round finishes.");
+            // Prefer auto/stop (clears active auto). Ignore 404 = already stopped.
+            await api.post("/scraper/auto/stop").catch(() => undefined);
+            if (jobId) {
+              await api.post(`/scraper/jobs/${jobId}/cancel`).catch(() => undefined);
+            }
+            toast.message("Stopped");
+            invalidateAfterScrape();
           } catch (err: unknown) {
-            toast.error(formatApiError(err, "Failed to stop auto scraping"));
+            toast.error(formatApiError(err, "Failed to stop"));
           }
         },
 
@@ -254,11 +345,24 @@ export const useScraperJobStore = create<ScraperJobState>()(
         },
 
         cancelJob: async (jobId: string) => {
+          // Optimistic UI — stop immediately and drop local job id
+          stopPolling();
+          set({
+            jobId: null,
+            cancelRequested: true,
+            isSubmitting: false,
+            isAutoMode: false,
+            jobStatus: "idle",
+            progressMessage: "Stopped",
+            stage: "cancelled",
+            jobApiStatus: "cancelled",
+          });
           try {
-            await api.post(`/scraper/jobs/${jobId}/cancel`);
-            toast.message("Cancellation requested");
+            await api.post(`/scraper/jobs/${jobId}/cancel`).catch(() => undefined);
+            toast.message("Stopped");
+            invalidateAfterScrape();
           } catch (err: unknown) {
-            toast.error(formatApiError(err, "Failed to cancel"));
+            toast.error(formatApiError(err, "Failed to stop"));
           }
         },
 
@@ -271,7 +375,7 @@ export const useScraperJobStore = create<ScraperJobState>()(
             return;
           }
           if (jobStatus === "success" || jobStatus === "failed") {
-            void pollOnce(jobId);
+            void pollOnce(jobId, pollGeneration);
           }
         },
 
@@ -293,6 +397,7 @@ export const useScraperJobStore = create<ScraperJobState>()(
             errorMsg: "",
             isSubmitting: false,
             logs: [],
+            agents: [],
             liveMetrics: null,
             jobApiStatus: null,
           });
@@ -303,6 +408,7 @@ export const useScraperJobStore = create<ScraperJobState>()(
       name: "leadgen-scraper-job",
       partialize: (state) => ({
         jobId: state.jobId,
+        ownerUserId: state.ownerUserId,
         isAutoMode: state.isAutoMode,
         jobStatus: state.jobStatus,
         progress: state.progress,
@@ -312,9 +418,9 @@ export const useScraperJobStore = create<ScraperJobState>()(
         autoKeptTotal: state.autoKeptTotal,
         autoDeletedTotal: state.autoDeletedTotal,
         cancelRequested: state.cancelRequested,
+        // Do not persist logs/agents — they bloat localStorage and slow every page load
         result: state.result,
         errorMsg: state.errorMsg,
-        logs: state.logs,
       }),
     }
   )

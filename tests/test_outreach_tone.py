@@ -42,5 +42,9 @@ def test_build_website_offer_message_no_free():
     )
     msg = build_website_offer_message(lead)
     assert "free" not in msg.lower()
-    assert "$300" in msg
-    assert "$1,000" in msg or "$1000" in msg
+    # First message: intro only — no price/package numbers; respectful "sir"
+    assert "$" not in msg
+    assert "300" not in msg
+    assert "1000" not in msg and "1,000" not in msg
+    assert "help local businesses" in msg.lower()
+    assert msg.lower().startswith("hi sir")

@@ -20,11 +20,12 @@ from app.services.scrape_suggest_service import ScrapeSuggestService
 from app.services.scraper_job_store import scraper_job_store
 from app.utils.auto_query_rotation import pick_background_scrape_request
 from app.utils.scrape_defaults import DEFAULT_SCRAPE_LOCATION
+from app.utils.scrape_sources import ScrapeSourceMode
 from app.utils.website_utils import WebsiteFilter
 
 logger = logging.getLogger(__name__)
 
-BACKGROUND_LIMIT = 25
+BACKGROUND_LIMIT = 10
 
 
 def _user_has_running_job(user_id: int) -> bool:
@@ -73,8 +74,9 @@ def _background_loop(user_id: int, stop_event: threading.Event) -> None:
                     keyword="restaurant",
                     location=DEFAULT_SCRAPE_LOCATION,
                     limit=BACKGROUND_LIMIT,
-                    website_filter=WebsiteFilter.all,
-                    enrich_contacts=True,
+                    scrape_source=ScrapeSourceMode.google_maps,
+                    website_filter=WebsiteFilter.without_website,
+                    enrich_contacts=False,
                     only_verified_contacts=False,
                     auto_generate_whatsapp=False,
                 )
@@ -86,7 +88,9 @@ def _background_loop(user_id: int, stop_event: threading.Event) -> None:
                 scrape_data = scrape_data.model_copy(
                     update={
                         "limit": BACKGROUND_LIMIT,
-                        "website_filter": WebsiteFilter.all,
+                        "scrape_source": ScrapeSourceMode.google_maps,
+                        "website_filter": WebsiteFilter.without_website,
+                        "enrich_contacts": False,
                         "only_verified_contacts": False,
                         "auto_generate_whatsapp": False,
                     }
@@ -179,8 +183,15 @@ def _background_loop(user_id: int, stop_event: threading.Event) -> None:
         background_scrape_store.update_progress(user_id, 0, "idle", "Stopped")
 
 
-def ensure_background_scraper(user_id: int) -> None:
+def ensure_background_scraper(user_id: int, *, start_if_stopped: bool = False) -> None:
+    """Touch session heartbeat. Only start a worker when explicitly requested.
+
+    Login heartbeat must NOT auto-start scrapes for every account — that made it look
+    like User A's scrape was also running on User B.
+    """
     background_scrape_store.touch_heartbeat(user_id)
+    if not start_if_stopped and not background_scrape_store.is_worker_alive(user_id):
+        return
 
     def factory(stop_event: threading.Event) -> threading.Thread:
         return threading.Thread(

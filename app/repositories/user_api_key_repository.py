@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from app.models.user import User, UserRole
 from app.models.user_api_key import ApiKeyStatus, ApiProvider, UserApiKey
 
 
@@ -15,10 +16,29 @@ class UserApiKeyRepository:
             query = query.filter(UserApiKey.provider == provider)
         return query.order_by(UserApiKey.priority.asc(), UserApiKey.id.asc()).all()
 
+    def list_platform_keys(self, provider: ApiProvider | None = None) -> list[UserApiKey]:
+        """All API keys managed by admin accounts (shared platform pool)."""
+        query = (
+            self.db.query(UserApiKey)
+            .join(User, User.id == UserApiKey.user_id)
+            .filter(User.role == UserRole.admin)
+        )
+        if provider:
+            query = query.filter(UserApiKey.provider == provider)
+        return query.order_by(UserApiKey.priority.asc(), UserApiKey.id.asc()).all()
+
     def get_by_id(self, user_id: int, key_id: int) -> UserApiKey | None:
         return (
             self.db.query(UserApiKey)
             .filter(UserApiKey.id == key_id, UserApiKey.user_id == user_id)
+            .first()
+        )
+
+    def get_platform_key_by_id(self, key_id: int) -> UserApiKey | None:
+        return (
+            self.db.query(UserApiKey)
+            .join(User, User.id == UserApiKey.user_id)
+            .filter(UserApiKey.id == key_id, User.role == UserRole.admin)
             .first()
         )
 
@@ -27,6 +47,20 @@ class UserApiKeyRepository:
             self.db.query(UserApiKey)
             .filter(
                 UserApiKey.user_id == user_id,
+                UserApiKey.provider == provider,
+                UserApiKey.status == ApiKeyStatus.active,
+            )
+            .order_by(UserApiKey.priority.asc(), UserApiKey.id.asc())
+            .all()
+        )
+
+    def get_active_platform_keys(self, provider: ApiProvider) -> list[UserApiKey]:
+        """Active keys from admin accounts — used by every user at runtime."""
+        return (
+            self.db.query(UserApiKey)
+            .join(User, User.id == UserApiKey.user_id)
+            .filter(
+                User.role == UserRole.admin,
                 UserApiKey.provider == provider,
                 UserApiKey.status == ApiKeyStatus.active,
             )
@@ -83,6 +117,22 @@ class UserApiKeyRepository:
         query = self.db.query(UserApiKey).filter(
             UserApiKey.user_id == user_id,
             UserApiKey.status == ApiKeyStatus.exhausted,
+        )
+        if provider:
+            query = query.filter(UserApiKey.provider == provider)
+        count = 0
+        for row in query.all():
+            row.status = ApiKeyStatus.active
+            row.last_error = None
+            count += 1
+        self.db.commit()
+        return count
+
+    def reset_exhausted_platform(self, provider: ApiProvider | None = None) -> int:
+        query = (
+            self.db.query(UserApiKey)
+            .join(User, User.id == UserApiKey.user_id)
+            .filter(User.role == UserRole.admin, UserApiKey.status == ApiKeyStatus.exhausted)
         )
         if provider:
             query = query.filter(UserApiKey.provider == provider)

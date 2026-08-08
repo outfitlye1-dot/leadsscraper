@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { PageLoader } from "@/components/Loader";
 import { PageError } from "@/components/PageError";
 import { StatCard } from "@/components/ui/StatCard";
+import { EmailOutreachPlatformSettingsForm } from "@/components/email-outreach/EmailOutreachPlatformSettingsForm";
 import { Mail, RefreshCw, Send, Users } from "lucide-react";
 import { useAdminOutreachSummary } from "@/hooks/useAdmin";
 
@@ -19,7 +20,7 @@ export default function AdminOutreachPage() {
     <div className="space-y-8">
       <PageHeader
         title="Email outreach"
-        description="Platform-wide outreach accounts, sends, replies, and agent activity."
+        description="Platform-wide outreach settings, accounts, sends, replies, and agent activity."
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -34,6 +35,8 @@ export default function AdminOutreachPage() {
         <StatCard label="Queued" value={data.emails_queued} icon={Mail} iconTone="indigo" />
         <StatCard label="Replies received" value={data.replies_received} icon={Mail} iconTone="rose" />
       </div>
+
+      <EmailOutreachPlatformSettingsForm />
     </div>
   );
 }

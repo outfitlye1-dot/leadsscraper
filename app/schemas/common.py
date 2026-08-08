@@ -43,16 +43,20 @@ class ScraperStartRequest(BaseModel):
     )
     campaign_id: int | None = Field(None, description="Optional campaign to tag messages")
     website_filter: WebsiteFilter = Field(
-        WebsiteFilter.without_website,
-        description="Always targets businesses without a real website",
+        WebsiteFilter.all,
+        description="with_website | without_website | all — default keeps all internet finds",
     )
     scrape_source: ScrapeSourceMode = Field(
         ScrapeSourceMode.all,
-        description="google_maps (Apify), google_search (Internet), meta_ads, or all",
+        description="google_maps (Playwright), google_search (Internet), meta_ads, or all",
     )
     include_meta_ads: bool = Field(
         False,
         description="When using All sources, optionally also discover businesses from Meta Ad Library",
+    )
+    rotate_keywords: bool = Field(
+        True,
+        description="Auto scrape: rotate related keywords each round/agent. Off = lock to the entered keyword.",
     )
 
     @model_validator(mode="after")
@@ -217,6 +221,17 @@ class ScraperLogEntry(BaseModel):
     text: str
 
 
+class ScraperAgentStatus(BaseModel):
+    id: str
+    label: str = ""
+    keyword: str = ""
+    city: str = ""
+    status: Literal["waiting", "queued", "running", "done", "failed", "idle"] = "idle"
+    message: str = ""
+    kept: int = 0
+    scraped: int = 0
+
+
 class ScraperJobStatusResponse(BaseModel):
     job_id: str
     status: Literal["pending", "running", "paused", "completed", "failed", "cancelled"]
@@ -235,6 +250,7 @@ class ScraperJobStatusResponse(BaseModel):
     live_metrics: ScrapeMetricsResponse | None = None
     failed_urls: list[str] = Field(default_factory=list)
     logs: list[ScraperLogEntry] = Field(default_factory=list)
+    agents: list[ScraperAgentStatus] = Field(default_factory=list)
 
 
 class ScraperJobControlResponse(BaseModel):
@@ -254,6 +270,32 @@ class AutoScrapeStartRequest(ScraperStartRequest):
         le=120,
         description="Seconds to wait between scrape rounds",
     )
+    country: str | None = Field(
+        default=None,
+        max_length=100,
+        description="When set, auto mode rotates major cities in this country with parallel agents",
+    )
+    parallel_agents: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="How many city scrapers run at once in country mode",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _seed_location_from_country(cls, data):
+        if not isinstance(data, dict):
+            return data
+        country = data.get("country")
+        location = (data.get("location") or "").strip()
+        if country and not location:
+            from app.utils.scrape_defaults import cities_for_country
+
+            cities = cities_for_country(str(country))
+            if cities:
+                data["location"] = cities[0]
+        return data
 
 
 class AutoScrapeStopResponse(BaseModel):

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Trash2, UserPlus } from "lucide-react";
+import { KeyRound, Trash2, UserPlus } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { PageLoader } from "@/components/Loader";
 import { PageError } from "@/components/PageError";
@@ -18,7 +18,6 @@ import {
   useDeleteAdminUser,
   useUpdateAdminUser,
 } from "@/hooks/useAdmin";
-import { formatDate } from "@/lib/utils";
 import type { AdminUserListItem } from "@/lib/types";
 
 export default function AdminUsersPage() {
@@ -62,6 +61,73 @@ export default function AdminUsersPage() {
       toast.success("Role updated");
     } catch {
       toast.error("Failed to update role");
+    }
+  };
+
+  const toggleApiAccess = async (user: AdminUserListItem) => {
+    const enabling = !(user.api_access ?? true);
+    try {
+      await updateUser.mutateAsync({
+        userId: user.id,
+        body: { api_access: enabling },
+      });
+      toast.success(
+        enabling
+          ? `API access enabled for ${user.name}`
+          : `API access disabled for ${user.name}`
+      );
+    } catch {
+      toast.error("Failed to update API access");
+    }
+  };
+
+  const setDailyTokens = async (user: AdminUserListItem) => {
+    const current = String(user.daily_token_limit ?? 50);
+    const raw = window.prompt(`Daily tokens for ${user.name}`, current);
+    if (raw == null) return;
+    const limit = Number(raw);
+    if (!Number.isFinite(limit) || limit < 0) {
+      toast.error("Enter a valid number");
+      return;
+    }
+    try {
+      await updateUser.mutateAsync({
+        userId: user.id,
+        body: { daily_token_limit: Math.floor(limit), reset_tokens_used_today: true },
+      });
+      toast.success(`Daily tokens set to ${Math.floor(limit)}`);
+    } catch {
+      toast.error("Failed to update tokens");
+    }
+  };
+
+  const togglePlan = async (user: AdminUserListItem) => {
+    const next = user.plan === "paid" ? "free" : "paid";
+    try {
+      await updateUser.mutateAsync({
+        userId: user.id,
+        body: { plan: next },
+      });
+      toast.success(next === "paid" ? "Moved to paid plan" : "Moved to free plan");
+    } catch {
+      toast.error("Failed to update plan");
+    }
+  };
+
+  const toggleOwnApiKeys = async (user: AdminUserListItem) => {
+    const enabling = !user.own_api_keys_enabled;
+    try {
+      await updateUser.mutateAsync({
+        userId: user.id,
+        body: { own_api_keys_enabled: enabling },
+      });
+      toast.success(
+        enabling
+          ? `Own API keys approved for ${user.name}`
+          : `Own API keys revoked for ${user.name}`
+      );
+    } catch {
+      toast.error("Failed to update own-API permission");
     }
   };
 
@@ -156,13 +222,55 @@ export default function AdminUsersPage() {
               <Badge variant={user.role === "admin" ? "default" : "secondary"}>{user.role}</Badge>
             ),
           },
-          { key: "lead_count", header: "Leads" },
-          { key: "campaign_count", header: "Campaigns" },
           {
-            key: "created_at",
-            header: "Joined",
-            render: (user) => formatDate(user.created_at),
+            key: "tokens",
+            header: "Daily tokens",
+            render: (user) =>
+              user.role === "admin" ? (
+                <span className="text-xs text-muted-foreground">Unlimited</span>
+              ) : (
+                <div className="text-xs">
+                  <p className="font-medium tabular-nums">
+                    {user.tokens_used_today ?? 0} / {user.daily_token_limit ?? 50}
+                  </p>
+                  <p className="text-muted-foreground">
+                    left {user.tokens_remaining ?? Math.max(0, (user.daily_token_limit ?? 50) - (user.tokens_used_today ?? 0))}
+                  </p>
+                </div>
+              ),
           },
+          {
+            key: "plan",
+            header: "Plan",
+            render: (user) => (
+              <Badge variant={user.plan === "paid" ? "success" : "secondary"}>
+                {user.plan === "paid" ? "paid" : "free"}
+              </Badge>
+            ),
+          },
+          {
+            key: "api_access",
+            header: "API",
+            render: (user) =>
+              user.role === "admin" ? (
+                <Badge variant="default">Always</Badge>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <Badge variant={(user.api_access ?? true) ? "success" : "destructive"}>
+                    {(user.api_access ?? true) ? "Platform on" : "Platform off"}
+                  </Badge>
+                  {user.own_api_keys_enabled ? (
+                    <Badge variant="success">Own keys</Badge>
+                  ) : user.own_api_keys_requested ? (
+                    <Badge variant="warning">Own keys requested</Badge>
+                  ) : null}
+                  {user.plan !== "paid" && user.paid_plan_requested ? (
+                    <Badge variant="warning">Paid requested</Badge>
+                  ) : null}
+                </div>
+              ),
+          },
+          { key: "lead_count", header: "Leads" },
           {
             key: "actions",
             header: "Actions",
@@ -171,6 +279,44 @@ export default function AdminUsersPage() {
                 <Button size="sm" variant="outline" onClick={() => toggleRole(user)}>
                   {user.role === "admin" ? "Make user" : "Make admin"}
                 </Button>
+                {user.role !== "admin" && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setDailyTokens(user)}
+                      disabled={updateUser.isPending}
+                    >
+                      Set tokens
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => togglePlan(user)}
+                      disabled={updateUser.isPending}
+                    >
+                      {user.plan === "paid" ? "Make free" : "Make paid"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={(user.api_access ?? true) ? "outline" : "default"}
+                      className="gap-1.5"
+                      onClick={() => toggleApiAccess(user)}
+                      disabled={updateUser.isPending}
+                    >
+                      <KeyRound className="h-3.5 w-3.5" />
+                      {(user.api_access ?? true) ? "Disable APIs" : "Enable APIs"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={user.own_api_keys_enabled ? "outline" : "default"}
+                      onClick={() => toggleOwnApiKeys(user)}
+                      disabled={updateUser.isPending}
+                    >
+                      {user.own_api_keys_enabled ? "Revoke own APIs" : "Approve own APIs"}
+                    </Button>
+                  </>
+                )}
                 <Button
                   size="sm"
                   variant="outline"

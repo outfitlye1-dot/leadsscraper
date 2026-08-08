@@ -9,12 +9,9 @@ import {
   Pause,
   Play,
   RefreshCw,
-  Square,
   XCircle,
 } from "lucide-react";
-import type { ScraperResponse, ScrapeMetricsResponse } from "@/lib/types";
-import { scraperStageLabel } from "@/lib/scraperStages";
-import { ScraperMetricsPanel } from "@/components/scraper/ScraperMetricsPanel";
+import type { ScraperAgentStatus, ScraperResponse, ScrapeMetricsResponse } from "@/lib/types";
 import { JobStatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -32,11 +29,11 @@ type Props = {
   result: ScraperResponse | null;
   errorMsg: string;
   autoKeptTotal: number;
+  agents?: ScraperAgentStatus[];
   liveMetrics?: ScrapeMetricsResponse | null;
   apiStatus?: string | null;
   onPause?: () => void;
   onResume?: () => void;
-  onCancel?: () => void;
   onRestart?: () => void;
   onDownload?: () => void;
 };
@@ -46,6 +43,86 @@ function estimateEta(progress: number): string | null {
   const remaining = 100 - progress;
   const mins = Math.max(1, Math.round((remaining / progress) * 0.8));
   return mins < 2 ? "~1 min left" : `~${mins} min left`;
+}
+
+function agentStatusLabel(status?: string) {
+  switch (status) {
+    case "running":
+      return "Running";
+    case "queued":
+      return "Queued";
+    case "waiting":
+      return "Waiting";
+    case "done":
+      return "Done";
+    case "failed":
+      return "Failed";
+    default:
+      return "Idle";
+  }
+}
+
+function AgentRoster({ agents }: { agents: ScraperAgentStatus[] }) {
+  if (!agents.length) return null;
+  return (
+    <div className="space-y-2 border-t border-border/60 px-4 py-3">
+      <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        Agents
+      </p>
+      <ul className="space-y-2">
+        {agents.map((agent) => {
+          const status = agent.status || "idle";
+          const isLive = status === "running";
+          return (
+            <li
+              key={agent.id}
+              className="rounded-lg border border-border/50 bg-muted/15 px-3 py-2.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold">{agent.label || agent.id}</p>
+                  <p className="mt-0.5 truncate text-sm">
+                    <span className="text-foreground">{agent.keyword || "—"}</span>
+                    <span className="text-muted-foreground"> · </span>
+                    <span className="text-foreground">{agent.city || "—"}</span>
+                  </p>
+                </div>
+                <span
+                  className={cn(
+                    "shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                    status === "running" && "bg-emerald-500/15 text-emerald-700",
+                    status === "queued" && "bg-amber-500/15 text-amber-700",
+                    status === "waiting" && "bg-muted text-muted-foreground",
+                    status === "done" && "bg-emerald-500/10 text-emerald-700",
+                    status === "failed" && "bg-destructive/10 text-destructive",
+                    status === "idle" && "bg-muted text-muted-foreground"
+                  )}
+                >
+                  {isLive ? (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      </span>
+                      {agentStatusLabel(status)}
+                    </span>
+                  ) : (
+                    agentStatusLabel(status)
+                  )}
+                </span>
+              </div>
+              <p className="mt-1 truncate text-xs text-muted-foreground">
+                {agent.message || "—"}
+                {typeof agent.kept === "number" && agent.kept > 0
+                  ? ` · ${agent.kept} kept`
+                  : ""}
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 export function ScraperRunStatus({
@@ -58,11 +135,11 @@ export function ScraperRunStatus({
   result,
   errorMsg,
   autoKeptTotal,
+  agents = [],
   liveMetrics,
   apiStatus,
   onPause,
   onResume,
-  onCancel,
   onRestart,
   onDownload,
 }: Props) {
@@ -75,7 +152,7 @@ export function ScraperRunStatus({
     return (
       <EmptyState
         title="Ready to scrape"
-        description="Configure your search and start a manual or auto scrape. Live metrics and logs appear here."
+        description="Configure your search and start a manual or auto scrape. Progress appears here."
       />
     );
   }
@@ -96,22 +173,31 @@ export function ScraperRunStatus({
               {!isAutoMode ? (
                 <span className="text-sm font-semibold tabular-nums">{progress}%</span>
               ) : (
-                <span className="text-xs text-muted-foreground">Round {iteration || 1}</span>
+                <span className="text-xs text-muted-foreground">Wave {iteration || 1}</span>
               )}
             </div>
             <p className="mt-2 text-sm font-medium">
-              {isAutoMode ? "Auto scraping in progress" : scraperStageLabel(stage)}
+              {isAutoMode ? "Auto scraping in progress" : progressMessage || "Scraping in progress"}
             </p>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              {progressMessage}
-              {autoKeptTotal > 0 ? ` · ${autoKeptTotal} kept` : ""}
-              {eta ? ` · ${eta}` : ""}
+              {isAutoMode
+                ? [
+                    progressMessage,
+                    autoKeptTotal > 0 ? `${autoKeptTotal} kept` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || "Starting agents…"
+                : [autoKeptTotal > 0 ? `${autoKeptTotal} kept` : null, eta]
+                    .filter(Boolean)
+                    .join(" · ") || "Working…"}
             </p>
           </div>
 
+          {isAutoMode && agents.length > 0 ? <AgentRoster agents={agents} /> : null}
+
           {!isAutoMode ? (
-            <div className="px-4 pt-3">
-              <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <div className="flex items-center px-4 py-3">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                 <div
                   className="h-full rounded-full bg-foreground transition-all duration-500 ease-out"
                   style={{ width: `${Math.max(progress, 3)}%` }}
@@ -120,42 +206,39 @@ export function ScraperRunStatus({
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 gap-px border-t border-border/60 bg-border/40 sm:grid-cols-4">
-            {[
-              { label: "Pages", value: m?.pages_fetched ?? 0 },
-              { label: "Leads found", value: m?.leads_parsed ?? 0 },
-              { label: "Failed", value: m?.pages_failed ?? 0 },
-              { label: "Success", value: `${m?.success_rate ?? 0}%` },
-            ].map((item) => (
-              <div key={item.label} className="bg-card px-3 py-2.5">
-                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{item.label}</p>
-                <p className="text-sm font-semibold tabular-nums">{item.value}</p>
-              </div>
-            ))}
-          </div>
+          {!isAutoMode ? (
+            <div className="grid grid-cols-2 gap-px border-t border-border/60 bg-border/40 sm:grid-cols-4">
+              {[
+                { label: "Pages", value: m?.pages_fetched ?? 0 },
+                { label: "Leads found", value: m?.leads_parsed ?? 0 },
+                { label: "Failed", value: m?.pages_failed ?? 0 },
+                { label: "Success", value: `${m?.success_rate ?? 0}%` },
+              ].map((item) => (
+                <div key={item.label} className="bg-card px-3 py-2.5">
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{item.label}</p>
+                  <p className="text-sm font-semibold tabular-nums">{item.value}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
 
-          <div className="flex flex-wrap gap-2 border-t border-border/60 p-3">
-            {onPause ? (
-              <Button type="button" variant="outline" size="sm" onClick={onPause} className="gap-1.5">
-                <Pause className="h-3.5 w-3.5" />
-                Pause
-              </Button>
-            ) : null}
-            {onResume ? (
-              <Button type="button" variant="outline" size="sm" onClick={onResume} className="gap-1.5">
-                <Play className="h-3.5 w-3.5" />
-                Resume
-              </Button>
-            ) : null}
-            {onCancel ? (
-              <Button type="button" variant="destructive" size="sm" onClick={onCancel} className="gap-1.5">
-                <Square className="h-3.5 w-3.5" />
-                Stop
-              </Button>
-            ) : null}
-          </div>
+          {(onPause || onResume) ? (
+            <div className="flex flex-wrap gap-2 border-t border-border/60 p-3">
+              {onPause ? (
+                <Button type="button" variant="outline" size="sm" onClick={onPause} className="gap-1.5">
+                  <Pause className="h-3.5 w-3.5" />
+                  Pause
+                </Button>
+              ) : null}
+              {onResume ? (
+                <Button type="button" variant="outline" size="sm" onClick={onResume} className="gap-1.5">
+                  <Play className="h-3.5 w-3.5" />
+                  Resume
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-        <ScraperMetricsPanel metrics={liveMetrics} />
       </div>
     );
   }

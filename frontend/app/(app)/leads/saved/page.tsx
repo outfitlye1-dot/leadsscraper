@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Download, Search } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -10,17 +11,15 @@ import {
   useBulkDeleteLeads,
   useUnsaveLead,
   useExportLeads,
-  useUpdateLead,
   type LeadFilters,
 } from "@/hooks/useLeads";
 import { ResizableTable } from "@/components/ui/resizable-table";
-import { LeadDetailDrawer } from "@/components/LeadDetailDrawer";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/PageHeader";
 import { Input } from "@/components/ui/Input";
 import { TableSkeleton } from "@/components/Loader";
 import { PageError } from "@/components/PageError";
-import type { Lead, LeadStatus } from "@/lib/types";
+import { formatApiError } from "@/lib/utils";
 
 function useDebouncedValue<T>(value: T, delay = 350): T {
   const [debounced, setDebounced] = useState(value);
@@ -32,9 +31,9 @@ function useDebouncedValue<T>(value: T, delay = 350): T {
 }
 
 export default function SavedLeadsPage() {
+  const router = useRouter();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [detailLead, setDetailLead] = useState<Lead | null>(null);
 
   const debouncedSearch = useDebouncedValue(search);
 
@@ -50,7 +49,6 @@ export default function SavedLeadsPage() {
   const bulkDeleteLeads = useBulkDeleteLeads();
   const unsaveLead = useUnsaveLead();
   const exportLeads = useExportLeads();
-  const updateLead = useUpdateLead();
 
   const isDeleting = deleteLead.isPending || bulkDeleteLeads.isPending;
   const isSaving = unsaveLead.isPending;
@@ -59,7 +57,6 @@ export default function SavedLeadsPage() {
     if (!confirm("Permanently delete this saved lead?")) return;
     try {
       await deleteLead.mutateAsync({ id, saved: true });
-      if (detailLead?.id === id) setDetailLead(null);
       toast.success("Saved lead deleted");
     } catch {
       toast.error("Failed to delete saved lead");
@@ -69,7 +66,6 @@ export default function SavedLeadsPage() {
   const handleUnsave = async (id: number) => {
     try {
       await unsaveLead.mutateAsync(id);
-      if (detailLead?.id === id) setDetailLead(null);
       toast.success("Moved back to Leads");
     } catch {
       toast.error("Failed to move lead back");
@@ -83,10 +79,14 @@ export default function SavedLeadsPage() {
         ids,
         filters: { saved: true },
       });
-      toast.success(`${deleted} saved lead${deleted !== 1 ? "s" : ""} deleted`);
+      if (deleted === 0) {
+        toast.info("No matching leads to delete");
+      } else {
+        toast.success(`${deleted} saved lead${deleted !== 1 ? "s" : ""} deleted`);
+      }
       setPage(1);
-    } catch {
-      toast.error("Failed to delete selected leads");
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, "Failed to delete selected leads"));
     }
   };
 
@@ -103,23 +103,9 @@ export default function SavedLeadsPage() {
     }
   };
 
-  const handleSaveDetail = async (id: number, patch: { status?: LeadStatus; notes?: string }) => {
-    try {
-      const updated = await updateLead.mutateAsync({ id, data: patch });
-      setDetailLead(updated);
-      toast.success("Lead updated");
-    } catch {
-      toast.error("Failed to update lead");
-    }
-  };
-
   return (
     <div className="space-y-6">
-      <PageHeader
-        eyebrow="Pipeline"
-        title="Saved Leads"
-        description="Leads you saved stay here — safe when you delete unsaved leads from the main list"
-      >
+      <PageHeader title="Saved Leads">
         <div className="flex flex-wrap gap-2">
           <Link href="/leads">
             <Button variant="outline" type="button">
@@ -162,7 +148,7 @@ export default function SavedLeadsPage() {
           total={data?.total || 0}
           pageSize={data?.page_size || 10}
           onPageChange={setPage}
-          onLeadClick={(lead) => setDetailLead(lead)}
+          onLeadClick={(lead) => router.push(`/leads/${lead.id}`)}
           onUnsave={handleUnsave}
           onDelete={handleDelete}
           onBulkDelete={handleBulkDelete}
@@ -171,14 +157,6 @@ export default function SavedLeadsPage() {
           isSaving={isSaving}
         />
       )}
-
-      <LeadDetailDrawer
-        lead={detailLead}
-        open={!!detailLead}
-        onClose={() => setDetailLead(null)}
-        onSave={handleSaveDetail}
-        isSaving={updateLead.isPending}
-      />
     </div>
   );
 }

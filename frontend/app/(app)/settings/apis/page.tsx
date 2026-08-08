@@ -1,16 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import Link from "next/link";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
-  ArrowLeft,
   KeyRound,
   Loader2,
   Plus,
   RefreshCw,
   Trash2,
-  User,
 } from "lucide-react";
+import { useState } from "react";
+import { useAuth } from "@/hooks/useAuth";
 import {
   useBulkCreateUserApiKeys,
   useDeleteUserApiKey,
@@ -18,11 +18,11 @@ import {
   useUpdateUserApiKey,
   useUserApiKeys,
 } from "@/hooks/useUserApiKeys";
-import { useAuth } from "@/hooks/useAuth";
+import { PageLoader } from "@/components/Loader";
+import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
-import { PageHeader } from "@/components/PageHeader";
 import { Textarea } from "@/components/ui/Textarea";
 import { formatDate } from "@/lib/utils";
 import type { ApiProvider, ApiKeyStatus, UserApiKey } from "@/lib/types";
@@ -37,16 +37,14 @@ const PROVIDERS: {
   {
     id: "apify",
     title: "Apify",
-    description:
-      "Used for Google Maps scraping. Add multiple keys in bulk — when one hits its limit, the next key is used automatically.",
+    description: "Your own keys for Google Maps scraping. These do not use daily platform tokens.",
     placeholder: "apify_api_xxxxxxxxxxxxxxxx\napify_api_yyyyyyyyyyyyyyyy",
     docsUrl: "https://console.apify.com/account/integrations",
   },
   {
     id: "groq",
     title: "Groq",
-    description:
-      "Used for AI messages, CV parsing, and scrape suggestions (llama-3.1-8b-instant — Groq free tier, ~14.4k requests/day). Keys are private to your account only.",
+    description: "Your own keys for AI messages and scrape suggestions. No daily token burn.",
     placeholder: "gsk_xxxxxxxxxxxxxxxx\ngsk_yyyyyyyyyyyyyyyy",
     docsUrl: "https://console.groq.com/keys",
   },
@@ -137,10 +135,6 @@ function ProviderSection({ provider }: { provider: (typeof PROVIDERS)[number] })
       <CardContent className="space-y-6">
         <div className="rounded-lg border border-border bg-muted/30 p-4">
           <p className="text-sm font-medium">Bulk add (one key per line)</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Keys are used in priority order. When a key hits its limit, the next active key is
-            used automatically.
-          </p>
           <Textarea
             className="mt-3 font-mono text-xs"
             rows={4}
@@ -183,8 +177,7 @@ function ProviderSection({ provider }: { provider: (typeof PROVIDERS)[number] })
           </div>
         ) : keys.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No {provider.title} keys yet. Add your own keys above — they are linked to your logged-in
-            account only.
+            No {provider.title} keys yet. Add your own keys above.
           </p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-border">
@@ -233,14 +226,6 @@ function ProviderSection({ provider }: { provider: (typeof PROVIDERS)[number] })
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
-                      {key.last_error && (
-                        <p
-                          className="mt-1 max-w-xs truncate text-xs text-destructive"
-                          title={key.last_error}
-                        >
-                          {key.last_error}
-                        </p>
-                      )}
                     </td>
                   </tr>
                 ))}
@@ -253,53 +238,31 @@ function ProviderSection({ provider }: { provider: (typeof PROVIDERS)[number] })
   );
 }
 
-export default function ApiKeysSettingsPage() {
+export default function OwnApiKeysSettingsPage() {
+  const router = useRouter();
   const { user } = useAuth();
+
+  useEffect(() => {
+    if (!user) return;
+    if (user.role === "admin") {
+      router.replace("/admin/apis");
+      return;
+    }
+    if (!user.own_api_keys_enabled) {
+      router.replace("/settings");
+    }
+  }, [user, router]);
+
+  if (!user) return <PageLoader />;
+  if (user.role === "admin" || !user.own_api_keys_enabled) return <PageLoader />;
 
   return (
     <div className="space-y-8">
-      <Link href="/settings">
-        <Button variant="ghost" size="sm" className="-mb-2 text-muted-foreground">
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Settings
-        </Button>
-      </Link>
-
       <PageHeader
-        eyebrow="Integrations"
-        title="API Keys"
-        description="Manage your Apify and Groq API keys. Each account uses only its own keys."
+        eyebrow="Account"
+        title="My API Keys"
+        description="Use your own Apify & Groq keys. Platform daily tokens are not charged when these succeed."
       />
-
-      {user && (
-        <Card className="border-border">
-          <CardContent className="flex items-center gap-3 pt-6">
-            <User className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <p className="text-sm font-medium">Logged in as</p>
-              <p className="text-sm text-muted-foreground">
-                {user.email} — API keys you add here belong to this account only.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      <Card className="border-border/70 bg-muted/30">
-        <CardContent className="pt-6 text-sm">
-          <strong>Auto rotation:</strong> When one key reaches its quota or limit, the system
-          automatically switches to the next active key. Use &quot;Reset exhausted&quot; to re-enable
-          keys after your Apify/Groq quota resets.
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/70 bg-muted/20">
-        <CardContent className="pt-6 text-sm font-light text-muted-foreground">
-          <strong className="text-foreground">New users:</strong> Every user must add their own API
-          keys after signing in. Keys added by another account are never shared or reused.
-        </CardContent>
-      </Card>
-
       {PROVIDERS.map((provider) => (
         <ProviderSection key={provider.id} provider={provider} />
       ))}

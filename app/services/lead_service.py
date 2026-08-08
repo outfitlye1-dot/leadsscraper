@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.lead import LeadStatus
 from app.models.user import User
 from app.repositories.lead_repository import LeadRepository
+from app.repositories.email_outreach_repository import EmailOutreachRepository
 from app.schemas.lead import (
     LeadBulkDeleteRequest,
     LeadBulkSaveRequest,
@@ -26,6 +27,7 @@ from app.utils.csv_export import export_leads_to_csv
 from app.utils.lead_dedup import filter_new_leads
 from app.utils.lead_import import parse_leads_csv
 from app.scraper.storage.exporters import export_leads_to_excel
+from app.utils.website_utils import has_real_website
 
 logger = logging.getLogger(__name__)
 
@@ -83,23 +85,43 @@ class LeadFilterParams:
 class LeadService:
     def __init__(self, db: Session):
         self.lead_repository = LeadRepository(db)
+        self.outreach_repository = EmailOutreachRepository(db)
 
-    def _to_response(self, lead) -> LeadResponse:
+    def _outreach_status_map(self, user_id: int, lead_ids: list[int]) -> dict[int, str]:
+        return self.outreach_repository.get_lead_outreach_status_map(user_id, lead_ids)
+
+    def _to_response(self, lead, *, outreach_status: str = "none") -> LeadResponse:
         response = LeadResponse.model_validate(lead)
-        return response.model_copy(update={"contact_links": build_contact_links(lead)})
+        return response.model_copy(
+            update={
+                "contact_links": build_contact_links(lead),
+                "outreach_email_status": outreach_status,
+            }
+        )
+
+    def _enrich_response(self, user_id: int, lead) -> LeadResponse:
+        status_map = self._outreach_status_map(user_id, [lead.id])
+        return self._to_response(lead, outreach_status=status_map.get(lead.id, "none"))
+
+    def _enrich_responses(self, user_id: int, leads: list) -> list[LeadResponse]:
+        status_map = self._outreach_status_map(user_id, [lead.id for lead in leads])
+        return [
+            self._to_response(lead, outreach_status=status_map.get(lead.id, "none"))
+            for lead in leads
+        ]
 
     def create_lead(self, user: User, data: LeadCreateRequest) -> LeadResponse:
         payload = apply_quality_to_lead(data.model_dump())
         if not payload.get("source"):
             payload["source"] = "manual"
         lead = self.lead_repository.create(user.id, payload)
-        return self._to_response(lead)
+        return self._enrich_response(user.id, lead)
 
     def get_lead(self, user: User, lead_id: int) -> LeadResponse:
         lead = self.lead_repository.get_by_id(user.id, lead_id)
         if not lead:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found")
-        return self._to_response(lead)
+        return self._enrich_response(user.id, lead)
 
     def get_lead_intelligence(self, user: User, lead_id: int):
         from app.schemas.lead import (
@@ -232,7 +254,7 @@ class LeadService:
             patch["quality_tier"] = scored["quality_tier"]
             patch["whatsapp_ready"] = scored["whatsapp_ready"]
         updated = self.lead_repository.update(lead, patch)
-        return self._to_response(updated)
+        return self._enrich_response(user.id, updated)
 
     def delete_lead(self, user: User, lead_id: int, *, allow_saved: bool = False) -> None:
         lead = self.lead_repository.get_by_id(user.id, lead_id)
@@ -250,7 +272,7 @@ class LeadService:
         if not lead:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found")
         if lead.is_saved:
-            return self._to_response(lead)
+            return self._enrich_response(user.id, lead)
         updated = self.lead_repository.update(
             lead,
             {"is_saved": True, "saved_at": datetime.now(UTC)},
@@ -261,16 +283,16 @@ class LeadService:
             AiOutreachAgent(self.lead_repository.db).on_leads_saved(user.id, [lead_id])
         except Exception:
             logger.exception("Outreach agent hook failed after save for user %s", user.id)
-        return self._to_response(updated)
+        return self._enrich_response(user.id, updated)
 
     def unsave_lead(self, user: User, lead_id: int) -> LeadResponse:
         lead = self.lead_repository.get_by_id(user.id, lead_id)
         if not lead:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found")
         if not lead.is_saved:
-            return self._to_response(lead)
+            return self._enrich_response(user.id, lead)
         updated = self.lead_repository.unsave(lead)
-        return self._to_response(updated)
+        return self._enrich_response(user.id, updated)
 
     def bulk_save_leads(self, user: User, data: LeadBulkSaveRequest) -> int:
         saved = self.lead_repository.save_by_ids(user.id, data.ids)
@@ -293,15 +315,16 @@ class LeadService:
         if data.select_all:
             deleted = self.lead_repository.delete_matching(user.id, **filters.as_dict())
         elif data.ids:
-            deleted = self.lead_repository.delete_by_ids(user.id, data.ids)
+            deleted = self.lead_repository.delete_by_ids(
+                user.id, data.ids, saved=filters.saved
+            )
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Provide lead IDs or set select_all to true",
             )
 
-        if deleted == 0:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No leads to delete")
+        # Idempotent: already-deleted / no-match returns 0 instead of 404
         return deleted
 
     def delete_saved_lead(self, user: User, lead_id: int) -> None:
@@ -326,7 +349,7 @@ class LeadService:
         )
         pages = math.ceil(total / page_size) if total > 0 else 0
         return LeadListResponse(
-            items=[self._to_response(lead) for lead in leads],
+            items=self._enrich_responses(user.id, leads),
             total=total,
             page=page,
             page_size=page_size,
@@ -382,8 +405,13 @@ class LeadService:
 
         pipeline = LeadIntelligencePipeline(self.lead_repository.db, user_id)
         loc = search_location or (leads_data[0].get("country") if leads_data else None)
+        # Lightweight audit only — full website re-fetch hangs for minutes on Windows DNS
+        # and freezes the scrape UI at "Saving…".
         leads_data, intel_stats = pipeline.process_batch(
-            leads_data, existing_leads=existing, search_location=loc
+            leads_data,
+            existing_leads=existing,
+            search_location=loc,
+            audit_websites=False,
         )
 
         new_leads, skipped = filter_new_leads(leads_data, existing)
@@ -412,16 +440,23 @@ class LeadService:
         return LeadService._lead_has_email(lead) and not LeadService._lead_has_phone(lead)
 
     @staticmethod
+    def _lead_has_website(lead) -> bool:
+        """True when the lead already has a real business website (not Maps/social)."""
+        return has_real_website(getattr(lead, "website", None))
+
+    @staticmethod
     def _lead_should_keep_in_inbox(lead) -> bool:
-        """Keep leads with a phone number (email optional). Remove email-only leads."""
-        return LeadService._lead_has_phone(lead)
+        """Keep phone leads that still need a website. Drop email-only and with-website."""
+        if not LeadService._lead_has_phone(lead):
+            return False
+        return not LeadService._lead_has_website(lead)
 
     @staticmethod
     def _lead_has_contact(lead) -> bool:
-        return LeadService._lead_should_keep_in_inbox(lead)
+        return LeadService._lead_has_phone(lead)
 
     def cleanup_non_phone_leads_by_ids(self, user_id: int, lead_ids: list[int]) -> tuple[int, int]:
-        """Delete unsaved inbox leads without phone from a scrape batch; keep others in Leads."""
+        """Delete unsaved batch leads without phone or that already have a website."""
         if not lead_ids:
             return 0, 0
         leads = self.lead_repository.get_many_by_ids(user_id, lead_ids)
@@ -430,7 +465,7 @@ class LeadService:
         for lead in leads:
             if lead.is_saved:
                 continue
-            if self._lead_has_contact(lead):
+            if self._lead_should_keep_in_inbox(lead):
                 kept += 1
             else:
                 delete_ids.append(lead.id)
@@ -452,14 +487,19 @@ class LeadService:
         return {"saved": saved}
 
     def cleanup_inbox_leads_without_contact(self, user: User) -> dict[str, int]:
-        """Delete inbox leads without a phone number; keep the rest in Leads."""
+        """Delete inbox leads with no phone OR that already have a website; keep phone + no site.
+
+        Includes background-tagged rows so soft-fill / auto cache leads are cleaned too.
+        Kept leads stay in the Leads inbox (not moved to Saved).
+        """
         leads, _ = self.lead_repository.search(
             user_id=user.id,
             saved=False,
             page=1,
             page_size=100_000,
+            include_background=True,
         )
-        delete_ids = [lead.id for lead in leads if not self._lead_has_phone(lead)]
+        delete_ids = [lead.id for lead in leads if not self._lead_should_keep_in_inbox(lead)]
         deleted = 0
         if delete_ids:
             deleted = self.lead_repository.delete_inbox_by_ids(user.id, delete_ids)
@@ -468,5 +508,6 @@ class LeadService:
             saved=False,
             page=1,
             page_size=1,
+            include_background=True,
         )
-        return {"kept": kept, "deleted": deleted}
+        return {"kept": kept, "deleted": deleted, "saved": 0}

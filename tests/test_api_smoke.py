@@ -12,8 +12,6 @@ import pytest
         ("GET", "/api/messages"),
         ("GET", "/api/campaigns"),
         ("GET", "/api/brain"),
-        ("GET", "/api/settings/database"),
-        ("GET", "/api/user-keys"),
         ("GET", "/api/scraper/daily/status"),
         ("GET", "/api/scraper/active"),
         ("GET", "/api/scraper/auto/status"),

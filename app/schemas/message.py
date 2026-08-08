@@ -22,6 +22,21 @@ class ScrapeSuggestRequest(BaseModel):
         default="all",
         description="google_maps | google_search | meta_ads | all",
     )
+    randomize: bool = Field(
+        default=True,
+        description="Return a fresh random keyword/query instead of the same default pick",
+    )
+    current_keyword: str = Field(default="", max_length=200)
+    current_search_query: str = Field(default="", max_length=500)
+    location: str = Field(
+        default="",
+        max_length=200,
+        description="User form location — used to build unique search queries",
+    )
+    website_preference: str = Field(
+        default="without_website",
+        description="without_website | with_website | all — shapes keyword strategy tips",
+    )
 
 
 class ScrapeSuggestResponse(BaseModel):

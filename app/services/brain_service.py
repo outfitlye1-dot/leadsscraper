@@ -25,6 +25,9 @@ class BrainService:
             "tools": brain.tools or [],
             "technologies": brain.technologies or [],
             "professional_summary": brain.professional_summary,
+            "pricing_currency": brain.pricing_currency or "USD",
+            "pricing_high": brain.pricing_high,
+            "pricing_floor": brain.pricing_floor,
         }
 
     def get_brain(self, user: User) -> BrainProfileResponse | None:

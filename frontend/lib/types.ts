@@ -6,6 +6,8 @@ export type LeadStatus =
   | "closed"
   | "lost";
 
+export type LeadOutreachEmailStatus = "none" | "awaiting_reply" | "replied";
+
 export type MessageType = "whatsapp" | "email" | "linkedin" | "follow_up";
 
 export type CampaignStatus = "draft" | "active" | "paused" | "completed";
@@ -14,9 +16,70 @@ export interface User {
   id: number;
   name: string;
   email: string;
+  avatar_url?: string | null;
   role: string;
+  api_access?: boolean;
+  plan?: "free" | "paid";
+  daily_token_limit?: number;
+  tokens_used_today?: number;
+  tokens_remaining?: number | null;
+  own_api_keys_enabled?: boolean;
+  own_api_keys_requested?: boolean;
+  paid_plan_requested?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface UsageQuota {
+  plan: string;
+  daily_token_limit: number;
+  tokens_used_today: number;
+  tokens_remaining: number;
+  tokens_reset_on: string;
+  api_access: boolean;
+  own_api_keys_enabled: boolean;
+  own_api_keys_requested: boolean;
+  paid_plan_requested?: boolean;
+  is_unlimited: boolean;
+  paid_plan_tokens: number;
+}
+
+export interface PlanOption {
+  id: string;
+  name: string;
+  price_usd: number;
+  daily_tokens: number;
+  features: string[];
+  is_current: boolean;
+}
+
+export interface PlansCatalog {
+  current_plan: string;
+  paid_plan_requested: boolean;
+  checkout_url?: string | null;
+  contact_email?: string | null;
+  price_pkr?: number | null;
+  payment_methods?: PaymentMethod[];
+  plans: PlanOption[];
+}
+
+export interface PaymentMethod {
+  id: string;
+  name: string;
+  description: string;
+  currency: string;
+  amount: number;
+}
+
+export interface PurchaseProPlanResult {
+  action: "redirect" | "request" | "already_active" | "jazzcash_form";
+  checkout_url?: string | null;
+  post_url?: string | null;
+  fields?: Record<string, string> | null;
+  txn_ref_no?: string | null;
+  amount_pkr?: number | null;
+  message: string;
+  usage?: UsageQuota | null;
 }
 
 export interface TokenResponse {
@@ -86,6 +149,7 @@ export interface Lead {
   is_saved: boolean;
   saved_at: string | null;
   contact_links: LeadContactLinks | null;
+  outreach_email_status?: LeadOutreachEmailStatus;
   created_at: string;
   updated_at: string;
 }
@@ -270,6 +334,17 @@ export interface ScraperLogEntry {
   text: string;
 }
 
+export interface ScraperAgentStatus {
+  id: string;
+  label?: string;
+  keyword?: string;
+  city?: string;
+  status?: "waiting" | "queued" | "running" | "done" | "failed" | "idle";
+  message?: string;
+  kept?: number;
+  scraped?: number;
+}
+
 export interface ScraperJobStatusResponse {
   job_id: string;
   status: ScraperJobStatus;
@@ -288,6 +363,7 @@ export interface ScraperJobStatusResponse {
   live_metrics?: ScrapeMetricsResponse | null;
   failed_urls?: string[];
   logs?: ScraperLogEntry[];
+  agents?: ScraperAgentStatus[];
 }
 
 export interface SearchQueryOptimizeResponse {
@@ -387,6 +463,9 @@ export interface BrainProfile {
   professional_summary: string | null;
   custom_notes: string | null;
   system_prompt: string | null;
+  pricing_currency?: string | null;
+  pricing_high?: number | null;
+  pricing_floor?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -612,6 +691,15 @@ export interface AgentStartResponse {
   pilot_email?: PilotEmail | null;
 }
 
+export interface ManualLeadOutreachResponse {
+  message: string;
+  subject: string;
+  to_email: string;
+  status: string;
+  lead_id: number;
+  company_name: string | null;
+}
+
 export interface OutreachNotification {
   id: number;
   notification_type: string;
@@ -644,6 +732,81 @@ export interface EmailConversation {
   follow_ups_stopped: boolean;
   last_message_at: string | null;
   created_at: string;
+}
+
+export interface ChatThread {
+  lead_id: number;
+  conversation_id: number | null;
+  lead_name: string;
+  lead_email: string;
+  subject: string;
+  status: string;
+  reply_intent: string | null;
+  reply_summary: string | null;
+  last_message_at: string | null;
+  last_preview: string | null;
+  has_reply: boolean;
+  message_count?: number;
+  unread_count?: number;
+  is_manual_chat?: boolean;
+  is_online?: boolean;
+  last_seen_at?: string | null;
+}
+
+export interface ChatMessage {
+  id: string;
+  direction: "outbound" | "inbound" | string;
+  from_email: string;
+  to_email: string;
+  subject: string;
+  body_text: string;
+  sent_at: string | null;
+  status: string | null;
+  source: string;
+  outreach_email_id: number | null;
+  /** WhatsApp-style: sent | delivered | read */
+  delivery_status?: "sent" | "delivered" | "read" | string | null;
+}
+
+export interface ChatThreadDetail {
+  lead_id: number;
+  conversation_id: number | null;
+  lead_name: string;
+  lead_email: string;
+  subject: string;
+  status: string;
+  messages: ChatMessage[];
+  is_online?: boolean;
+  last_seen_at?: string | null;
+}
+
+export interface SupportMessage {
+  id: number;
+  direction: "outbound" | "inbound";
+  body_text: string;
+  sent_at: string;
+  sender_name: string;
+  sender_role: string;
+  sender_user_id: number;
+}
+
+export interface SupportThread {
+  user_id: number;
+  user_name: string;
+  user_email: string;
+  user_avatar_url?: string | null;
+  last_message_at: string | null;
+  last_preview: string | null;
+  unread_count: number;
+}
+
+export interface SupportThreadDetail {
+  user_id: number;
+  user_name: string;
+  user_email: string;
+  user_avatar_url?: string | null;
+  messages: SupportMessage[];
+  unread_count: number;
 }
 
 export interface AdminDashboard {
@@ -734,13 +897,145 @@ export interface AdminOutreachSummary {
 }
 
 export interface AdminSystemInfo {
+  status: string;
   app_name: string;
   app_version: string;
   database_url: string;
+  database_type: string;
+  database_size_mb: number | null;
   outreach_worker_enabled: boolean;
+  outreach_worker_running: boolean;
+  outreach_worker_poll_seconds: number;
+  outreach_sync_interval_seconds: number;
   smtp_configured: boolean;
   google_oauth_configured: boolean;
   microsoft_oauth_configured: boolean;
   scraper_workers: number;
   scraper_fast_mode: boolean;
+  scraper_playwright_enabled: boolean;
+  scraper_timeout: number;
+  groq_model: string;
+  otp_dev_mode: boolean;
+  frontend_url: string;
+  default_secret_key: boolean;
+  upload_dir: string;
+  export_dir: string;
+  total_users: number;
+  total_leads: number;
+  total_messages: number;
+  total_api_keys: number;
+  active_scraper_jobs: number;
+  outreach_agents_running: number;
+  outreach_pending_jobs: number;
+  checked_at: string;
 }
+
+export interface WhatsAppChatContact {
+  lead_id: number;
+  company_name?: string | null;
+  contact_name?: string | null;
+  phone: string;
+  city?: string | null;
+  country?: string | null;
+  last_message?: string | null;
+  last_message_at?: string | null;
+  message_count: number;
+}
+
+export interface WhatsAppChatMessage {
+  id: number;
+  lead_id: number;
+  direction: "inbound" | "outbound" | string;
+  body: string;
+  created_at: string;
+}
+
+export interface WhatsAppChatThread {
+  lead_id: number;
+  company_name?: string | null;
+  contact_name?: string | null;
+  phone: string;
+  city?: string | null;
+  country?: string | null;
+  memory_summary?: string | null;
+  last_price_quoted?: number | null;
+  customer_budget?: number | null;
+  deal_status?: string | null;
+  messages: WhatsAppChatMessage[];
+}
+
+export interface WhatsAppChatReplyResponse {
+  customer: WhatsAppChatMessage;
+  reply: WhatsAppChatMessage;
+}
+
+export interface WhatsAppChatOpenerResponse {
+  reply: WhatsAppChatMessage;
+}
+
+export interface WhatsAppWebStatus {
+  enabled: boolean;
+  headless: boolean;
+  profile_dir: string;
+  browser_started: boolean;
+  logged_in: boolean;
+  worker_running: boolean;
+  auto_reply: boolean;
+  ignore_groups: boolean;
+  owner_user_id?: number | null;
+  owner_email?: string | null;
+  cdp_mode?: boolean;
+  cdp_configured?: boolean;
+  cdp_alive?: boolean;
+  cloud_api_untouched: boolean;
+  message?: string | null;
+  daily_outreach_enabled?: boolean;
+  daily_outreach_limit?: number;
+  daily_outreach_sent_count?: number;
+  daily_outreach_remaining?: number;
+  daily_outreach_interval_minutes?: number;
+  daily_outreach_seconds_until_next?: number;
+}
+
+export interface WhatsAppWebStartResult {
+  ok: boolean;
+  logged_in: boolean;
+  worker_running: boolean;
+  qr_data_url?: string | null;
+  message?: string | null;
+  owner_email?: string | null;
+}
+
+export interface WhatsAppWebQrResult {
+  logged_in: boolean;
+  qr_data_url?: string | null;
+  message?: string | null;
+}
+
+export interface WhatsAppWebSettings {
+  auto_reply: boolean;
+  ignore_phones: string[];
+  ignore_groups: boolean;
+  human_takeover_phones: string[];
+  owner_user_id?: number | null;
+  owner_email?: string | null;
+  daily_outreach_enabled?: boolean;
+  daily_outreach_limit?: number;
+  daily_outreach_sent_date?: string | null;
+  daily_outreach_sent_count?: number;
+  daily_outreach_interval_minutes?: number;
+}
+
+export interface WhatsAppWebJob {
+  id: number;
+  chat_title: string;
+  phone_hint?: string | null;
+  body: string;
+  status: string;
+  ai_replied: boolean;
+  reply_body?: string | null;
+  error_message?: string | null;
+  lead_id?: number | null;
+  created_at?: string | null;
+}
+

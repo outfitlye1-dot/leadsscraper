@@ -15,7 +15,12 @@ from app.schemas.admin import (
     AdminUserListResponse,
     AdminUserUpdateRequest,
 )
+from app.schemas.email_outreach import (
+    EmailOutreachSettingsResponse,
+    EmailOutreachSettingsUpdateRequest,
+)
 from app.schemas.user import UserResponse
+from app.services.email_outreach.service import EmailOutreachService
 from app.services.admin_service import AdminService
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -126,6 +131,23 @@ def outreach_summary(
     db: Session = Depends(get_db),
 ) -> AdminOutreachSummaryResponse:
     return AdminService(db).outreach_summary()
+
+
+@router.get("/outreach/settings", response_model=EmailOutreachSettingsResponse)
+def get_outreach_settings(
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> EmailOutreachSettingsResponse:
+    return EmailOutreachService(db).get_settings(admin)
+
+
+@router.put("/outreach/settings", response_model=EmailOutreachSettingsResponse)
+def update_outreach_settings(
+    data: EmailOutreachSettingsUpdateRequest,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> EmailOutreachSettingsResponse:
+    return EmailOutreachService(db).update_settings(admin, data)
 
 
 @router.get("/system", response_model=AdminSystemResponse)

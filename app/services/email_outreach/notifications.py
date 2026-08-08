@@ -66,6 +66,22 @@ class NotificationService:
             row.is_read = True
             self.db.commit()
 
+    def mark_read_for_lead(self, user_id: int, lead_id: int) -> int:
+        rows = (
+            self.db.query(OutreachNotification)
+            .filter(
+                OutreachNotification.user_id == user_id,
+                OutreachNotification.lead_id == lead_id,
+                OutreachNotification.is_read.is_(False),
+            )
+            .all()
+        )
+        for row in rows:
+            row.is_read = True
+        if rows:
+            self.db.commit()
+        return len(rows)
+
     def mark_all_read(self, user_id: int) -> int:
         rows = (
             self.db.query(OutreachNotification)

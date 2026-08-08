@@ -48,34 +48,46 @@ def _score_name_candidate(name: str, website: str | None, source_weight: int) ->
         return -1000
     if len(name) > 70:
         return -1000
+    lower = name.lower().strip()
+    if lower in {"united kingdom", "uk", "london", "england", "united states", "usa"}:
+        return -1000
     score = source_weight + min(len(name), 60)
     if len(name) > 50:
         score -= 30
+    if "best" in lower or "welcome" in lower or "official" in lower:
+        score -= 70
     if website:
         host = urlparse(website).netloc.lower().split(".")[0].replace("-", "")
         norm = name.lower().replace(" ", "").replace("-", "")
         if host and (host in norm or norm in host):
-            score += 25
+            score += 40
+        elif host and ("best" in lower or "welcome" in lower):
+            # Prefer host brand over marketing slogans
+            score -= 40
     return score
 
 
 def _pick_company_name(contacts: dict, seed_title: str | None, host: str, website: str | None) -> str | None:
     candidates: list[tuple[int, str]] = []
+    host_base = host.split(".")[0].replace("-", " ").title() if host else ""
 
     for name, weight in (
         (contacts.get("og_site_name"), 100),
         (contacts.get("schema_name"), 90),
         (contacts.get("brand_h1"), 80),
-        (contacts.get("title"), 70),
-        (extract_business_name_from_title(seed_title, website) if seed_title else None, 60),
+        (extract_business_name_from_title(seed_title, website) if seed_title else None, 75),
+        (contacts.get("title"), 50),
+        (host_base, 45),
     ):
         if not name:
             continue
         cleaned = extract_business_name_from_title(name, website)
         if cleaned != "Unknown" and not is_listicle_or_bad_title(cleaned):
-            from app.utils.scrape_sources import _is_bare_domain
+            from app.utils.scrape_sources import _is_bare_domain, GENERIC_TITLE_WORDS
 
             if _is_bare_domain(cleaned):
+                continue
+            if cleaned.lower().strip() in GENERIC_TITLE_WORDS:
                 continue
             score = _score_name_candidate(cleaned, website, weight)
             if score > -500:
@@ -84,9 +96,8 @@ def _pick_company_name(contacts: dict, seed_title: str | None, host: str, websit
     if candidates:
         return max(candidates, key=lambda item: item[0])[1]
 
-    host_name = host.split(".")[0].replace("-", " ").title()
-    cleaned_host = extract_business_name_from_title(host_name, website)
-    if _score_name_candidate(cleaned_host, website, 40) > -500:
+    cleaned_host = extract_business_name_from_title(host_base, website)
+    if cleaned_host and cleaned_host != "Unknown" and _score_name_candidate(cleaned_host, website, 40) > -500:
         return cleaned_host
     return None
 
@@ -163,24 +174,27 @@ def scrape_business_site(
     from app.scrapers.ai_selectors import discover_selectors_from_html
     from app.scrapers.image_intel import extract_images
 
-    if _cfg().SCRAPER_AI_SELECTORS:
+    settings = _cfg()
+    if settings.SCRAPER_AI_SELECTORS and not settings.SCRAPER_FAST_MODE:
         discover_selectors_from_html(html, final_url)
-    images = extract_images(html, final_url)
-    if images.logo_url and metrics:
-        metrics.inc("images_downloaded", len(images.images))
-    if images.logo_url:
-        contacts["logo_url"] = images.logo_url
+    if not settings.SCRAPER_FAST_MODE:
+        images = extract_images(html, final_url)
+        if images.logo_url and metrics:
+            metrics.inc("images_downloaded", len(images.images))
+        if images.logo_url:
+            contacts["logo_url"] = images.logo_url
 
     page_country = contacts.get("country") or country
 
-    settings = get_settings()
     has_primary_contact = bool(contacts.get("email")) or _has_phone(contacts)
     skip_contact_pages = settings.SCRAPER_FAST_MODE and has_primary_contact
 
     if not skip_contact_pages:
         soup = BeautifulSoup(html, "lxml")
-        max_links = 3 if not settings.SCRAPER_FAST_MODE else 2
+        max_links = 3 if not settings.SCRAPER_FAST_MODE else 1
         for link in find_contact_links(soup, final_url, max_links=max_links):
+            if fetcher.job_control and fetcher.job_control():
+                break
             extra_html, extra_url = fetcher.fetch(link)
             if extra_html:
                 html_pages.append(extra_html)
