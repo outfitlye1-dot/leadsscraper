@@ -4,7 +4,15 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
   if (isAxiosError(error)) {
     const status = error.response?.status;
     if (!error.response) {
-      return "Cannot reach the API. Make sure the backend is running on port 8001.";
+      return "Cannot reach the API. On Vercel set NEXT_PUBLIC_API_URL to your Railway /api URL, then redeploy.";
+    }
+    if (status === 404) {
+      return "API not found (404). Set NEXT_PUBLIC_API_URL=https://leadsscraper-production.up.railway.app/api on Vercel and redeploy.";
+    }
+    if (status === 409) {
+      const detail = error.response?.data?.detail;
+      if (typeof detail === "string" && detail) return detail;
+      return "Email already registered — try logging in instead.";
     }
     if (status === 500) {
       const detail = error.response?.data?.detail;

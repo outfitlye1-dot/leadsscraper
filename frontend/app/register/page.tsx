@@ -50,7 +50,7 @@ export default function RegisterPage() {
       router.push("/dashboard");
     } catch (error) {
       toast.error(
-        getApiErrorMessage(error, "Registration failed. Email may already be in use.")
+        getApiErrorMessage(error, "Registration failed. Check API URL / network, then try again.")
       );
     }
   };
