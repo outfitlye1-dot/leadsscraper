@@ -175,7 +175,7 @@ function ScraperPageContent() {
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [autoPreparing, setAutoPreparing] = useState(false);
   const [rotateKeywords, setRotateKeywords] = useState(true);
-  const [websiteFilter, setWebsiteFilter] = useState<WebsiteFilterMode>("without_website");
+  const [websiteFilter, setWebsiteFilter] = useState<WebsiteFilterMode>("all");
   const [enrichEmails, setEnrichEmails] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
   const exportLeads = useExportLeads();
@@ -225,7 +225,7 @@ function ScraperPageContent() {
     const enrichParam = searchParams.get("enrich") === "1";
 
     let nextFilter: WebsiteFilterMode =
-      wfFromUrl || saved?.website_filter || "without_website";
+      wfFromUrl || saved?.website_filter || "all";
     let nextEnrich = enrichParam || Boolean(saved?.enrich_emails);
 
     if (enrichParam && nextFilter === "without_website") {
