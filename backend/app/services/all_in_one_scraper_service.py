@@ -187,56 +187,89 @@ class AllInOneScraperService:
                 prog(100, "cancelled", "Stopped")
                 return ScraperStartResponse(success=True, count=0, message="Stopped")
 
-            prog(10, "parallel", "Google Maps + Internet + Meta Ads (parallel)...")
-            parallel_workers = compute_source_workers(3 if needs_meta else 2)
-            scrape_metrics.set("active_workers", parallel_workers)
-            scrape_metrics.set("queue_size", 3 if needs_meta else 2)
-            with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
-                maps_future = executor.submit(scrape_maps)
-                web_future = executor.submit(scrape_web)
-                meta_future = executor.submit(scrape_meta) if needs_meta else None
-                pending = {maps_future, web_future}
-                if meta_future:
-                    pending.add(meta_future)
-
-                while pending:
+            # Avoid dual Chromium OOM on Postgres/Railway (Maps Target crashed)
+            db_url = (settings.DATABASE_URL or "").lower()
+            serialize = (not settings.SCRAPER_PARALLEL_SOURCES) or ("postgres" in db_url)
+            if serialize:
+                prog(10, "google_maps", "Finding local businesses...")
+                try:
+                    maps_leads = scrape_maps()
+                    prog(30, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
+                except Exception as exc:
+                    errors.append(f"Google Maps: {exc}")
+                    prog(30, "google_maps", f"Google Maps failed: {exc}")
+                if job_id and _job_store.is_cancelled(job_id):
+                    prog(100, "cancelled", "Stopped")
+                    return ScraperStartResponse(success=True, count=0, message="Stopped")
+                prog(35, "web_search", "Searching the internet...")
+                try:
+                    search_leads = scrape_web()
+                    prog(50, "web_search", f"Internet: found {len(search_leads)} results")
+                except Exception as exc:
+                    errors.append(f"Internet: {exc}")
+                    prog(50, "web_search", f"Internet failed: {exc}")
+                if needs_meta:
                     if job_id and _job_store.is_cancelled(job_id):
-                        for fut in pending:
-                            fut.cancel()
                         prog(100, "cancelled", "Stopped")
                         return ScraperStartResponse(success=True, count=0, message="Stopped")
+                    prog(55, "meta_ads", "Searching Meta Ad Library...")
+                    try:
+                        meta_leads = scrape_meta()
+                        prog(60, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
+                    except Exception as exc:
+                        errors.append(f"Meta Ads: {exc}")
+                        prog(60, "meta_ads", f"Meta Ads failed: {exc}")
+            else:
+                prog(10, "parallel", "Google Maps + Internet + Meta Ads (parallel)...")
+                parallel_workers = compute_source_workers(3 if needs_meta else 2)
+                scrape_metrics.set("active_workers", parallel_workers)
+                scrape_metrics.set("queue_size", 3 if needs_meta else 2)
+                with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+                    maps_future = executor.submit(scrape_maps)
+                    web_future = executor.submit(scrape_web)
+                    meta_future = executor.submit(scrape_meta) if needs_meta else None
+                    pending = {maps_future, web_future}
+                    if meta_future:
+                        pending.add(meta_future)
 
-                    done, pending = wait(pending, timeout=0.4, return_when=FIRST_COMPLETED)
-                    scrape_metrics.set("queue_size", len(pending))
-                    scrape_metrics.set(
-                        "active_workers",
-                        min(parallel_workers, max(0, len(pending))),
-                    )
-                    for future in done:
-                        try:
-                            result = future.result()
-                        except Exception as exc:
+                    while pending:
+                        if job_id and _job_store.is_cancelled(job_id):
+                            for fut in pending:
+                                fut.cancel()
+                            prog(100, "cancelled", "Stopped")
+                            return ScraperStartResponse(success=True, count=0, message="Stopped")
+
+                        done, pending = wait(pending, timeout=0.4, return_when=FIRST_COMPLETED)
+                        scrape_metrics.set("queue_size", len(pending))
+                        scrape_metrics.set(
+                            "active_workers",
+                            min(parallel_workers, max(0, len(pending))),
+                        )
+                        for future in done:
+                            try:
+                                result = future.result()
+                            except Exception as exc:
+                                if future is maps_future:
+                                    errors.append(f"Google Maps: {exc}")
+                                    prog(30, "google_maps", f"Google Maps failed: {exc}")
+                                elif future is web_future:
+                                    errors.append(f"Internet: {exc}")
+                                    prog(45, "web_search", f"Internet failed: {exc}")
+                                else:
+                                    errors.append(f"Meta Ads: {exc}")
+                                    prog(55, "meta_ads", f"Meta Ads failed: {exc}")
+                                continue
                             if future is maps_future:
-                                errors.append(f"Google Maps: {exc}")
-                                prog(30, "google_maps", f"Google Maps failed: {exc}")
+                                maps_leads = result
+                                prog(30, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
                             elif future is web_future:
-                                errors.append(f"Internet: {exc}")
-                                prog(45, "web_search", f"Internet failed: {exc}")
+                                search_leads = result
+                                prog(45, "web_search", f"Internet: found {len(search_leads)} results")
                             else:
-                                errors.append(f"Meta Ads: {exc}")
-                                prog(55, "meta_ads", f"Meta Ads failed: {exc}")
-                            continue
-                        if future is maps_future:
-                            maps_leads = result
-                            prog(30, "google_maps", f"Google Maps: found {len(maps_leads)} businesses")
-                        elif future is web_future:
-                            search_leads = result
-                            prog(45, "web_search", f"Internet: found {len(search_leads)} results")
-                        else:
-                            meta_leads = result
-                            prog(55, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
-            scrape_metrics.set("active_workers", 0)
-            scrape_metrics.set("queue_size", 0)
+                                meta_leads = result
+                                prog(55, "meta_ads", f"Meta Ads: found {len(meta_leads)} advertisers")
+                scrape_metrics.set("active_workers", 0)
+                scrape_metrics.set("queue_size", 0)
         elif needs_maps:
             prog(10, "google_maps", "Finding local businesses...")
             try:

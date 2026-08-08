@@ -14,6 +14,12 @@ STEALTH_LAUNCH_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-infobars",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--mute-audio",
+    "--renderer-process-limit=2",
 ]
 
 CONTACT_SELECTORS = DEFAULT_CONTACT_SELECTORS

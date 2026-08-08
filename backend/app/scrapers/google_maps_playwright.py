@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 AbortFn = Callable[[], bool]
 
-# Up to 2 Chromium instances — matches default parallel_agents without thrashing Windows.
-_MAPS_BROWSER_LOCK = threading.Semaphore(2)
+_MAPS_BROWSER_LOCK: threading.Semaphore | None = None
+_MAPS_LOCK_GUARD = threading.Lock()
 
 _LISTING_SEL = 'a[href*="/maps/place/"]'
 _SKIP_NAMES = frozenset(
@@ -33,6 +33,66 @@ _SKIP_NAMES = frozenset(
     }
 )
 
+_MAPS_LAUNCH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--mute-audio",
+    "--renderer-process-limit=2",
+]
+
+
+def _maps_concurrency() -> int:
+    try:
+        from app.core.config import get_settings
+
+        return max(1, int(get_settings().SCRAPER_PLAYWRIGHT_MAPS_CONCURRENCY or 1))
+    except Exception:
+        return 1
+
+
+def _maps_retries() -> int:
+    try:
+        from app.core.config import get_settings
+
+        return max(1, min(int(get_settings().SCRAPER_PLAYWRIGHT_MAPS_RETRIES or 2), 4))
+    except Exception:
+        return 2
+
+
+def _get_maps_lock() -> threading.Semaphore:
+    global _MAPS_BROWSER_LOCK
+    with _MAPS_LOCK_GUARD:
+        if _MAPS_BROWSER_LOCK is None:
+            _MAPS_BROWSER_LOCK = threading.Semaphore(_maps_concurrency())
+        return _MAPS_BROWSER_LOCK
+
+
+def _is_browser_crash(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in (
+            "target crashed",
+            "target closed",
+            "browser has been closed",
+            "browser closed",
+            "page crashed",
+            "has been closed",
+        )
+    )
+
+
+def _safe_count(locator) -> int:
+    try:
+        return int(locator.count())
+    except Exception:
+        return -1
+
 
 def _extract_coordinates_from_url(url: str) -> tuple[float | None, float | None]:
     try:
@@ -46,7 +106,7 @@ def _extract_coordinates_from_url(url: str) -> tuple[float | None, float | None]
 def _safe_text(page, selector: str, timeout: float = 1500) -> str:
     try:
         loc = page.locator(selector)
-        if loc.count() <= 0:
+        if _safe_count(loc) <= 0:
             return ""
         return (loc.first.inner_text(timeout=timeout) or "").strip()
     except Exception:
@@ -56,7 +116,7 @@ def _safe_text(page, selector: str, timeout: float = 1500) -> str:
 def _safe_attr(page, selector: str, attr: str, timeout: float = 1500) -> str:
     try:
         loc = page.locator(selector)
-        if loc.count() <= 0:
+        if _safe_count(loc) <= 0:
             return ""
         return (loc.first.get_attribute(attr, timeout=timeout) or "").strip()
     except Exception:
@@ -73,7 +133,7 @@ def _dismiss_consent(page) -> None:
     ):
         try:
             btn = page.locator(sel)
-            if btn.count() > 0:
+            if _safe_count(btn) > 0:
                 btn.first.click(timeout=1500)
                 page.wait_for_timeout(400)
                 return
@@ -139,15 +199,20 @@ def _read_panel(
     phone = ""
     phone_unformatted = ""
     # Same as kevmaindev/Googles-Maps-Scraper: visible Maps text first
-    phone_btn = page.locator('button[data-item-id*="phone:tel:"]')
-    if phone_btn.count() > 0:
+    try:
+        phone_btn = page.locator('button[data-item-id*="phone:tel:"]')
+        phone_count = _safe_count(phone_btn)
+    except Exception:
+        phone_count = -1
+        phone_btn = None
+    if phone_btn is not None and phone_count > 0:
         btn = phone_btn.first
         data_id = btn.get_attribute("data-item-id") or ""
         if "phone:tel:" in data_id:
             phone_unformatted = data_id.split("phone:tel:", 1)[-1].strip()
         try:
             visible = btn.locator("div.fontBodyMedium")
-            if visible.count() > 0:
+            if _safe_count(visible) > 0:
                 phone = (visible.first.inner_text(timeout=1200) or "").strip()
         except Exception:
             phone = ""
@@ -246,6 +311,169 @@ def _read_panel(
     }
 
 
+def _run_maps_session(
+    *,
+    search_query: str,
+    keyword: str,
+    location: str,
+    limit: int,
+    headless: bool,
+    require_no_website: bool,
+    aborted: AbortFn,
+    deadline: float,
+) -> list[dict]:
+    from playwright.sync_api import sync_playwright
+
+    results: list[dict] = []
+    seen_names: set[str] = set()
+    seen_phones: set[str] = set()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless, args=_MAPS_LAUNCH_ARGS)
+        try:
+            context = browser.new_context(
+                locale="en-GB",
+                viewport={"width": 1024, "height": 720},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
+            page.set_default_timeout(8000)
+
+            maps_url = "https://www.google.com/maps/search/" + quote_plus(search_query)
+            logger.info(
+                "Playwright Maps: searching %r (limit=%s)",
+                search_query,
+                limit,
+            )
+            page.goto(maps_url, wait_until="domcontentloaded", timeout=18000)
+            page.wait_for_timeout(800)
+            _dismiss_consent(page)
+
+            try:
+                page.wait_for_selector(_LISTING_SEL, timeout=10000)
+            except Exception:
+                logger.warning("Playwright Maps: no listings for %r", search_query)
+                return results
+
+            # Scroll feed until we have enough cards (or stall / crash)
+            feed = page.locator('div[role="feed"]')
+            previously_counted = 0
+            stall_rounds = 0
+            while not aborted():
+                count = _safe_count(page.locator(_LISTING_SEL))
+                if count < 0:
+                    raise RuntimeError("Locator.count: Target crashed")
+                target_cards = min(limit + 6, max(limit * 2, 12))
+                if require_no_website:
+                    target_cards = min(max(limit * 3, 18), 40)
+                if count >= target_cards:
+                    break
+                try:
+                    if _safe_count(feed) > 0:
+                        feed.first.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+                    else:
+                        page.mouse.wheel(0, 4000)
+                except Exception as scroll_exc:
+                    if _is_browser_crash(scroll_exc):
+                        raise
+                    page.mouse.wheel(0, 4000)
+                page.wait_for_timeout(500)
+                new_count = _safe_count(page.locator(_LISTING_SEL))
+                if new_count < 0:
+                    raise RuntimeError("Locator.count: Target crashed")
+                if new_count <= previously_counted:
+                    stall_rounds += 1
+                    if stall_rounds >= 2:
+                        break
+                else:
+                    stall_rounds = 0
+                    previously_counted = new_count
+
+            try:
+                raw_links = page.locator(_LISTING_SEL).all()
+            except Exception as exc:
+                if _is_browser_crash(exc):
+                    raise
+                logger.warning("Playwright Maps: listing snapshot failed: %s", exc)
+                return results
+
+            listings = []
+            seen_aria: set[str] = set()
+            for link in raw_links:
+                try:
+                    aria = (link.get_attribute("aria-label") or "").strip()
+                except Exception:
+                    aria = ""
+                key = aria.lower() if aria else ""
+                if key and (key in seen_aria or key in _SKIP_NAMES):
+                    continue
+                if key:
+                    seen_aria.add(key)
+                listings.append((link, aria))
+                max_scan = limit * 3 if require_no_website else limit * 2
+                if len(listings) >= max_scan:
+                    break
+
+            logger.info(
+                "Playwright Maps: opening %s cards (no_website=%s)",
+                len(listings),
+                require_no_website,
+            )
+
+            for link, aria_name in listings:
+                if aborted() or len(results) >= limit:
+                    break
+                try:
+                    link.click(timeout=3500)
+                    try:
+                        page.wait_for_selector(
+                            'button[data-item-id*="phone:tel:"], a[data-item-id="authority"], button[data-item-id="address"]',
+                            timeout=2800,
+                        )
+                    except Exception:
+                        page.wait_for_timeout(700)
+
+                    item = _read_panel(
+                        page,
+                        fallback_name=aria_name,
+                        keyword=keyword,
+                        location=location,
+                        require_no_website=require_no_website,
+                    )
+                    if not item:
+                        continue
+                    name_key = (item.get("title") or "").lower()
+                    phone_key = re.sub(r"\D", "", item.get("phone") or "")
+                    if name_key in seen_names or (phone_key and phone_key in seen_phones):
+                        continue
+                    seen_names.add(name_key)
+                    if phone_key:
+                        seen_phones.add(phone_key)
+                    results.append(item)
+                except Exception as exc:
+                    if _is_browser_crash(exc):
+                        if results:
+                            logger.warning(
+                                "Playwright Maps: browser crashed after %s leads — returning partial",
+                                len(results),
+                            )
+                            return results
+                        raise
+                    logger.debug("Playwright Maps listing failed: %s", exc)
+                    continue
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+    return results
+
+
 def scrape_google_maps_playwright(
     keyword: str,
     location: str,
@@ -282,22 +510,19 @@ def scrape_google_maps_playwright(
         return bool(job_control and job_control())
 
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright  # noqa: F401
     except ImportError:
         logger.error("playwright not installed — cannot scrape Google Maps locally")
         return []
 
-    results: list[dict] = []
-    seen_names: set[str] = set()
-    seen_phones: set[str] = set()
-
     # Queue for a free browser slot — waiting does NOT burn the scrape budget.
     slot_wait_deadline = time.monotonic() + max(90.0, budget * 2)
     acquired = False
+    lock = _get_maps_lock()
     while time.monotonic() < slot_wait_deadline:
         if job_control and job_control():
             return []
-        if _MAPS_BROWSER_LOCK.acquire(timeout=2.0):
+        if lock.acquire(timeout=2.0):
             acquired = True
             break
     if not acquired:
@@ -306,140 +531,57 @@ def scrape_google_maps_playwright(
 
     # Fresh scrape clock after we own a browser
     deadline = time.monotonic() + budget
+    attempts = _maps_retries()
+    results: list[dict] = []
+    last_exc: BaseException | None = None
 
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            )
+        for attempt in range(1, attempts + 1):
+            if aborted():
+                break
             try:
-                context = browser.new_context(
-                    locale="en-GB",
-                    viewport={"width": 1280, "height": 900},
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/122.0.0.0 Safari/537.36"
-                    ),
+                results = _run_maps_session(
+                    search_query=search_query,
+                    keyword=keyword,
+                    location=location,
+                    limit=limit,
+                    headless=headless,
+                    require_no_website=require_no_website,
+                    aborted=aborted,
+                    deadline=deadline,
                 )
-                page = context.new_page()
-                page.set_default_timeout(8000)
-
-                maps_url = "https://www.google.com/maps/search/" + quote_plus(search_query)
-                logger.info(
-                    "Playwright Maps: searching %r (limit=%s, budget=%.0fs)",
-                    search_query,
-                    limit,
-                    budget,
-                )
-                page.goto(maps_url, wait_until="domcontentloaded", timeout=18000)
-                page.wait_for_timeout(800)
-                _dismiss_consent(page)
-
-                try:
-                    page.wait_for_selector(_LISTING_SEL, timeout=10000)
-                except Exception:
-                    logger.warning("Playwright Maps: no listings for %r", search_query)
-                    return results
-
-                # Scroll feed until we have enough cards (or stall)
-                feed = page.locator('div[role="feed"]')
-                previously_counted = 0
-                stall_rounds = 0
-                while not aborted():
-                    count = page.locator(_LISTING_SEL).count()
-                    target_cards = min(limit + 6, max(limit * 2, 12))
-                    if require_no_website:
-                        target_cards = min(max(limit * 3, 18), 50)
-                    if count >= target_cards:
-                        break
-                    try:
-                        if feed.count() > 0:
-                            feed.first.evaluate("el => { el.scrollTop = el.scrollHeight; }")
-                        else:
-                            page.mouse.wheel(0, 4000)
-                    except Exception:
-                        page.mouse.wheel(0, 4000)
-                    page.wait_for_timeout(500)
-                    new_count = page.locator(_LISTING_SEL).count()
-                    if new_count <= previously_counted:
-                        stall_rounds += 1
-                        if stall_rounds >= 2:
-                            break
-                    else:
-                        stall_rounds = 0
-                        previously_counted = new_count
-
-                # Snapshot ElementHandles once (same as upstream repo)
-                raw_links = page.locator(_LISTING_SEL).all()
-                listings = []
-                seen_aria: set[str] = set()
-                for link in raw_links:
-                    try:
-                        aria = (link.get_attribute("aria-label") or "").strip()
-                    except Exception:
-                        aria = ""
-                    key = aria.lower() if aria else ""
-                    if key and (key in seen_aria or key in _SKIP_NAMES):
-                        continue
-                    if key:
-                        seen_aria.add(key)
-                    listings.append((link, aria))
-                    max_scan = limit * 3 if require_no_website else limit * 2
-                    if len(listings) >= max_scan:
-                        break
-
-                logger.info(
-                    "Playwright Maps: opening %s cards (no_website=%s)",
-                    len(listings),
-                    require_no_website,
-                )
-
-                for link, aria_name in listings:
-                    if aborted() or len(results) >= limit:
-                        break
-                    try:
-                        link.click(timeout=3500)
-                        try:
-                            page.wait_for_selector(
-                                'button[data-item-id*="phone:tel:"], a[data-item-id="authority"], button[data-item-id="address"]',
-                                timeout=2800,
-                            )
-                        except Exception:
-                            page.wait_for_timeout(700)
-
-                        item = _read_panel(
-                            page,
-                            fallback_name=aria_name,
-                            keyword=keyword,
-                            location=location,
-                            require_no_website=require_no_website,
-                        )
-                        if not item:
-                            continue
-                        name_key = (item.get("title") or "").lower()
-                        phone_key = re.sub(r"\D", "", item.get("phone") or "")
-                        if name_key in seen_names or (phone_key and phone_key in seen_phones):
-                            continue
-                        seen_names.add(name_key)
-                        if phone_key:
-                            seen_phones.add(phone_key)
-                        results.append(item)
-                    except Exception as exc:
-                        logger.debug("Playwright Maps listing failed: %s", exc)
-                        continue
-            finally:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if _is_browser_crash(exc) and attempt < attempts and not aborted():
+                    logger.warning(
+                        "Playwright Maps: Chromium crashed (attempt %s/%s) for %r — retrying",
+                        attempt,
+                        attempts,
+                        search_query,
+                    )
+                    time.sleep(1.2 * attempt)
+                    continue
+                if _is_browser_crash(exc):
+                    logger.error(
+                        "Playwright Maps: Chromium crashed for %r after %s attempts: %s",
+                        search_query,
+                        attempt,
+                        exc,
+                    )
+                    break
+                raise
     finally:
-        _MAPS_BROWSER_LOCK.release()
+        lock.release()
+
+    if last_exc and not results and _is_browser_crash(last_exc):
+        raise RuntimeError(
+            "Google Maps browser crashed (often low memory on the server). "
+            "Try again with a smaller limit, or upgrade Railway memory."
+        ) from last_exc
+    if last_exc and not results:
+        raise last_exc
 
     logger.info(
         "Playwright Maps: extracted %s phone leads for %r in %.1fs",
