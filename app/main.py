@@ -97,6 +97,8 @@ def create_app() -> FastAPI:
             r"|https://[a-z0-9-]+\.ngrok(-free)?\.app"
             r"|https://[a-z0-9-]+\.ngrok\.io"
             r"|https://[a-z0-9-]+\.ngrok\.dev"
+            r"|https://[a-z0-9-]+(?:-[a-z0-9-]+)*\.vercel\.app"
+            r"|https://[a-z0-9-]+(?:-[a-z0-9-]+)*\.up\.railway\.app"
         ),
         allow_credentials=True,
         allow_methods=["*"],

@@ -22,6 +22,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useAdminSystem } from "@/hooks/useAdmin";
+import { getApiOrigin } from "@/lib/apiBase";
 import { formatDate } from "@/lib/utils";
 
 function StatusFlag({ ok, label, hint }: { ok: boolean; label: string; hint?: string }) {
@@ -107,13 +108,13 @@ export default function AdminSystemPage() {
             <InfoRow label="Export dir" value={data.export_dir} />
             <InfoRow label="Last checked" value={formatDate(data.checked_at)} />
             <div className="flex flex-wrap gap-2 pt-2">
-              <Link href="http://127.0.0.1:8001/docs" target="_blank">
+              <Link href={`${getApiOrigin() || ""}/docs`} target="_blank">
                 <Button size="sm" variant="outline" className="gap-1.5">
                   API docs
                   <ExternalLink className="h-3.5 w-3.5" />
                 </Button>
               </Link>
-              <Link href="http://127.0.0.1:8001/health" target="_blank">
+              <Link href={`${getApiOrigin() || ""}/health`} target="_blank">
                 <Button size="sm" variant="outline" className="gap-1.5">
                   Health endpoint
                   <ExternalLink className="h-3.5 w-3.5" />

@@ -26,6 +26,9 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "sqlite:///./leadgen.db"
 
+    # local | production — affects CORS merging and prod safety defaults
+    ENVIRONMENT: str = "local"
+
     CORS_ORIGINS: str = "*"
 
     MAX_UPLOAD_SIZE_MB: int = 10
@@ -141,6 +144,17 @@ class Settings(BaseSettings):
     OUTREACH_SYNC_INTERVAL_SECONDS: int = 60
 
     @model_validator(mode="after")
+    def normalize_database_url(self) -> "Settings":
+        """Railway/Heroku often provide postgres:// — normalize for SQLAlchemy + psycopg3."""
+        url = (self.DATABASE_URL or "").strip()
+        if url.startswith("postgres://"):
+            url = "postgresql://" + url[len("postgres://") :]
+        if url.startswith("postgresql://") and "+psycopg" not in url and "+asyncpg" not in url:
+            url = "postgresql+psycopg://" + url[len("postgresql://") :]
+        self.DATABASE_URL = url
+        return self
+
+    @model_validator(mode="after")
     def default_outreach_worker(self) -> "Settings":
         """Enable outreach worker automatically only outside local SQLite dev."""
         if "sqlite" not in self.DATABASE_URL.lower():
@@ -171,6 +185,10 @@ class Settings(BaseSettings):
         return not self.smtp_configured and "sqlite" in self.DATABASE_URL.lower()
 
     @property
+    def is_production(self) -> bool:
+        return (self.ENVIRONMENT or "").strip().lower() in {"production", "prod"}
+
+    @property
     def cors_origins_list(self) -> list[str]:
         defaults = [
             "http://localhost:3000",
@@ -178,12 +196,18 @@ class Settings(BaseSettings):
             "http://127.0.0.1:3000",
             "http://127.0.0.1:3001",
         ]
-        if self.CORS_ORIGINS.strip() == "*":
-            return defaults
+        frontend = (self.FRONTEND_URL or "").strip().rstrip("/")
+        extras = [frontend] if frontend else []
 
-        configured = [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
-        merged = list(dict.fromkeys([*configured, *defaults]))
-        return merged
+        if self.CORS_ORIGINS.strip() == "*":
+            if self.is_production and extras:
+                return list(dict.fromkeys(extras))
+            return list(dict.fromkeys([*defaults, *extras]))
+
+        configured = [origin.strip().rstrip("/") for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+        if self.is_production:
+            return list(dict.fromkeys([*configured, *extras]))
+        return list(dict.fromkeys([*configured, *defaults, *extras]))
 
     @property
     def max_upload_size_bytes(self) -> int:

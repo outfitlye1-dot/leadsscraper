@@ -1,19 +1,42 @@
 /** @type {import('next').NextConfig} */
-const backendUrl = process.env.BACKEND_INTERNAL_URL || "http://127.0.0.1:8001";
+const rawBackend =
+  process.env.BACKEND_INTERNAL_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  "http://127.0.0.1:8001";
+
+const backendUrl = String(rawBackend).replace(/\/$/, "");
+const publicApi = (process.env.NEXT_PUBLIC_API_URL || "/api").trim();
+const isVercel = process.env.VERCEL === "1";
+const backendIsLocal = /127\.0\.0\.1|localhost/i.test(backendUrl);
+// Browser → Railway directly (no Vercel proxy). Preferred when BACKEND_INTERNAL_URL missing.
+const useDirectApi = publicApi.startsWith("http://") || publicApi.startsWith("https://");
+
+if (isVercel && backendIsLocal && !useDirectApi) {
+  console.warn(
+    "[next.config] On Vercel, set BACKEND_INTERNAL_URL=https://YOUR-RAILWAY.up.railway.app " +
+      "OR set NEXT_PUBLIC_API_URL=https://YOUR-RAILWAY.up.railway.app/api — " +
+      "localhost proxy will crash serverless functions."
+  );
+}
 
 const nextConfig = {
-  // Strict mode double-mounts in dev and can feel like a refresh.
   reactStrictMode: false,
   async rewrites() {
+    // Direct browser→Railway: no proxy rewrites needed (avoids FUNCTION_INVOCATION_FAILED)
+    if (useDirectApi) {
+      return [];
+    }
+    // Never proxy to localhost from Vercel — that always crashes
+    if (isVercel && backendIsLocal) {
+      return [];
+    }
     return [
-      {
-        source: "/health",
-        destination: `${backendUrl}/health`,
-      },
-      {
-        source: "/api/:path*",
-        destination: `${backendUrl}/api/:path*`,
-      },
+      { source: "/health", destination: `${backendUrl}/health` },
+      { source: "/docs", destination: `${backendUrl}/docs` },
+      { source: "/docs/:path*", destination: `${backendUrl}/docs/:path*` },
+      { source: "/openapi.json", destination: `${backendUrl}/openapi.json` },
+      { source: "/redoc", destination: `${backendUrl}/redoc` },
+      { source: "/api/:path*", destination: `${backendUrl}/api/:path*` },
     ];
   },
   webpack: (config, { dev }) => {

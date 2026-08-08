@@ -1,6 +1,6 @@
 uploads/
 exports/
-data/wa_web_profile/
+data/
 checkpoints/
 *.db
 *.db-shm
@@ -17,3 +17,6 @@ htmlcov/
 .coverage
 tmp_*.txt
 .next/
+
+.vercel
+.env*
