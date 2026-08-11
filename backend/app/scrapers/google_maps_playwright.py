@@ -1,8 +1,7 @@
 """Playwright Google Maps scraper — adapted from
 https://github.com/kevmaindev/Googles-Maps-Scraper (master/main.py)
 
-Uses direct Maps search URL (reliable in headless/Docker) + upstream
-scroll / click / panel field extraction.
+Fast path: read phones from result cards, then click only cards still missing a phone.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,6 @@ AbortFn = Callable[[], bool]
 _MAPS_BROWSER_LOCK: threading.Semaphore | None = None
 _MAPS_LOCK_GUARD = threading.Lock()
 
-# Upstream selectors (kevmaindev/Googles-Maps-Scraper)
 _LISTING_XPATH = '//a[contains(@href, "/maps/place")]'
 _LISTING_CSS = 'a[href*="/maps/place/"]'
 _SKIP_NAMES = frozenset(
@@ -34,6 +32,9 @@ _SKIP_NAMES = frozenset(
         "photos",
         "reviews",
     }
+)
+_PHONE_RE = re.compile(
+    r"(?:\+|00)[1-9][\d\s().-]{6,16}\d|(?<!\d)0\d(?:[\s().-]?\d){8,13}(?!\d)"
 )
 
 
@@ -62,6 +63,25 @@ def _extract_coordinates_from_url(url: str) -> tuple[float | None, float | None]
         return None, None
 
 
+def _normalize_phone(raw: str) -> tuple[str, str]:
+    phone = re.sub(r"[^\d+\-\s().]", "", raw or "").strip()
+    phone = re.sub(r"\s+", " ", phone).strip()
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) < 8:
+        return "", ""
+    return phone, digits
+
+
+def _phone_from_text(text: str) -> str:
+    if not text:
+        return ""
+    for match in _PHONE_RE.findall(text):
+        phone, digits = _normalize_phone(match)
+        if phone and len(digits) >= 8:
+            return phone
+    return ""
+
+
 def _dismiss_consent(page) -> None:
     for sel in (
         'button:has-text("Accept all")',
@@ -74,11 +94,29 @@ def _dismiss_consent(page) -> None:
         try:
             btn = page.locator(sel)
             if btn.count() > 0:
-                btn.first.click(timeout=2000)
-                page.wait_for_timeout(600)
+                btn.first.click(timeout=1500)
+                page.wait_for_timeout(400)
                 return
         except Exception:
             continue
+
+
+def _page_blocked(page) -> bool:
+    try:
+        html = (page.content() or "").lower()
+    except Exception:
+        return False
+    return any(
+        token in html
+        for token in (
+            "unusual traffic",
+            "detected unusual",
+            "our systems have detected",
+            "enable javascript",
+            "captcha",
+            "recaptcha",
+        )
+    )
 
 
 def _listing_count(page) -> int:
@@ -94,21 +132,100 @@ def _listing_count(page) -> int:
         return 0
 
 
+def _feed_cards(page) -> list[dict]:
+    try:
+        return page.evaluate(
+            """() => {
+              const cards = [];
+              const seen = new Set();
+              const links = document.querySelectorAll('a[href*="/maps/place/"]');
+              for (const a of links) {
+                const href = a.href || '';
+                const name = (a.getAttribute('aria-label') || '').trim();
+                const key = (name || href).toLowerCase();
+                if (!key || seen.has(key)) continue;
+                seen.add(key);
+                const root = a.closest('div[role="article"]')
+                  || a.closest('div[jsaction]')
+                  || a.parentElement;
+                const text = root && root.innerText ? root.innerText.slice(0, 500) : '';
+                cards.push({ name, href, text });
+              }
+              return cards;
+            }"""
+        ) or []
+    except Exception as exc:
+        logger.debug("Playwright Maps: feed extract failed: %s", exc)
+        return []
+
+
+def _city_country(location: str) -> tuple[str, str]:
+    city = ""
+    country = ""
+    if location and "," in location:
+        parts = [p.strip() for p in location.split(",") if p.strip()]
+        if parts:
+            city = parts[0]
+        if len(parts) > 1:
+            country = parts[-1]
+    elif location:
+        city = location
+    return city, country
+
+
+def _lead_dict(
+    *,
+    name: str,
+    phone: str,
+    phone_unformatted: str,
+    website: str | None,
+    address: str | None,
+    keyword: str,
+    location: str,
+    url: str,
+    category: str | None = None,
+    rating: float | None = None,
+    reviews_count: int | None = None,
+) -> dict:
+    city, country = _city_country(location)
+    lat, lng = _extract_coordinates_from_url(url)
+    cat = category or keyword
+    return {
+        "title": name,
+        "name": name,
+        "phone": phone,
+        "phoneUnformatted": phone_unformatted or phone,
+        "email": None,
+        "website": website or None,
+        "websiteUrl": website or None,
+        "address": address or None,
+        "street": address or None,
+        "city": city or None,
+        "country": country or None,
+        "categoryName": cat or None,
+        "categories": [cat] if cat else [],
+        "totalScore": rating,
+        "reviewsCount": reviews_count,
+        "location": {"lat": lat, "lng": lng} if lat is not None else None,
+        "url": url,
+        "_playwright_maps": True,
+    }
+
+
 def _read_panel_upstream(
     page,
     *,
     keyword: str,
     location: str,
     fallback_name: str = "",
-    require_no_website: bool = False,
 ) -> dict | None:
     """Extract fields the same way as kevmaindev/Googles-Maps-Scraper."""
     name = ""
     try:
-        name = (page.locator("h1.DUwDvf").inner_text(timeout=2500) or "").strip()
+        name = (page.locator("h1.DUwDvf").inner_text(timeout=1200) or "").strip()
     except Exception:
         try:
-            name = (page.locator("h1.fontHeadlineLarge").inner_text(timeout=1200) or "").strip()
+            name = (page.locator("h1.fontHeadlineLarge").inner_text(timeout=800) or "").strip()
         except Exception:
             name = (fallback_name or "").strip()
     if not name or name.lower() in _SKIP_NAMES:
@@ -119,7 +236,7 @@ def _read_panel_upstream(
     try:
         loc = page.locator(address_xpath)
         if loc.count() > 0:
-            address = (loc.first.inner_text(timeout=1500) or "").strip()
+            address = (loc.first.inner_text(timeout=800) or "").strip()
     except Exception:
         address = ""
 
@@ -128,7 +245,7 @@ def _read_panel_upstream(
     try:
         loc = page.locator(website_xpath)
         if loc.count() > 0:
-            domain = (loc.first.inner_text(timeout=1500) or "").strip()
+            domain = (loc.first.inner_text(timeout=800) or "").strip()
             domain = re.sub(r"(?i)^website:\s*", "", domain).strip()
             if domain:
                 website = domain if domain.startswith("http") else f"https://{domain}"
@@ -143,10 +260,8 @@ def _read_panel_upstream(
         except Exception:
             pass
 
-    if require_no_website and website:
-        return None
-
     phone = ""
+    phone_unformatted = ""
     phone_xpath = (
         '//button[contains(@data-item-id, "phone:tel:")]'
         '//div[contains(@class, "fontBodyMedium")]'
@@ -154,26 +269,19 @@ def _read_panel_upstream(
     try:
         loc = page.locator(phone_xpath)
         if loc.count() > 0:
-            phone = (loc.first.inner_text(timeout=1500) or "").strip()
+            phone = (loc.first.inner_text(timeout=800) or "").strip()
     except Exception:
         phone = ""
-
-    phone_unformatted = ""
     try:
         phone_btn = page.locator('button[data-item-id*="phone:tel:"]')
         if phone_btn.count() > 0:
             data_id = phone_btn.first.get_attribute("data-item-id") or ""
             if "phone:tel:" in data_id:
-                phone_unformatted = data_id.split("phone:tel:", 1)[-1].strip()
+                phone_unformatted = unquote(data_id.split("phone:tel:", 1)[-1].strip())
             if not phone:
                 aria = phone_btn.first.get_attribute("aria-label") or ""
                 if aria.lower().startswith("phone:"):
                     phone = aria.split(":", 1)[-1].strip()
-                else:
-                    try:
-                        phone = (phone_btn.first.inner_text(timeout=1000) or "").strip()
-                    except Exception:
-                        pass
     except Exception:
         pass
     if not phone and phone_unformatted:
@@ -186,85 +294,35 @@ def _read_panel_upstream(
                 phone_unformatted = phone_unformatted or phone
         except Exception:
             pass
+    if not phone:
+        try:
+            phone = _phone_from_text(page.locator("div[role='main']").first.inner_text(timeout=600))
+        except Exception:
+            pass
 
-    phone = re.sub(r"[^\d+\-\s().]", "", phone or "").strip()
-    phone = re.sub(r"\s+", " ", phone).strip()
-    digits = re.sub(r"\D", "", phone_unformatted or phone)
+    phone, digits = _normalize_phone(phone_unformatted or phone)
     if len(digits) < 8:
         return None
-    if not phone_unformatted:
-        phone_unformatted = digits
-
-    reviews_count = None
-    review_count_xpath = '//div[@jsaction="pane.reviewChart.moreReviews"]//span'
-    try:
-        loc = page.locator(review_count_xpath)
-        if loc.count() > 0:
-            raw = (loc.first.inner_text(timeout=800) or "").strip()
-            reviews_count = int(re.sub(r"[^\d]", "", raw.split()[0] or "") or 0) or None
-    except Exception:
-        reviews_count = None
-
-    rating = None
-    reviews_average_xpath = (
-        '//div[@jsaction="pane.reviewChart.moreReviews"]//div[@role="img"]'
-    )
-    try:
-        loc = page.locator(reviews_average_xpath)
-        if loc.count() > 0:
-            label = loc.first.get_attribute("aria-label") or ""
-            rating = float(label.split()[0].replace(",", ".").strip())
-    except Exception:
-        try:
-            label = page.locator('div[role="img"][aria-label*="star"]').first.get_attribute(
-                "aria-label"
-            ) or ""
-            m = re.search(r"([\d.,]+)", label.replace(",", "."))
-            if m:
-                rating = float(m.group(1))
-        except Exception:
-            rating = None
 
     category = keyword
     try:
-        cat = page.locator('button[jsaction*="category"]').first.inner_text(timeout=800)
+        cat = page.locator('button[jsaction*="category"]').first.inner_text(timeout=500)
         if cat:
             category = cat.strip()
     except Exception:
         pass
 
-    lat, lng = _extract_coordinates_from_url(page.url)
-    city = ""
-    country = ""
-    if location and "," in location:
-        parts = [p.strip() for p in location.split(",") if p.strip()]
-        if parts:
-            city = parts[0]
-        if len(parts) > 1:
-            country = parts[-1]
-    elif location:
-        city = location
-
-    return {
-        "title": name,
-        "name": name,
-        "phone": phone,
-        "phoneUnformatted": phone_unformatted or phone,
-        "email": None,
-        "website": None if require_no_website else (website or None),
-        "websiteUrl": None if require_no_website else (website or None),
-        "address": address or None,
-        "street": address or None,
-        "city": city or None,
-        "country": country or None,
-        "categoryName": category or keyword or None,
-        "categories": [category] if category else [],
-        "totalScore": rating,
-        "reviewsCount": reviews_count,
-        "location": {"lat": lat, "lng": lng} if lat is not None else None,
-        "url": page.url,
-        "_playwright_maps": True,
-    }
+    return _lead_dict(
+        name=name,
+        phone=phone,
+        phone_unformatted=digits,
+        website=website or None,
+        address=address or None,
+        keyword=keyword,
+        location=location,
+        url=page.url,
+        category=category,
+    )
 
 
 def scrape_google_maps_playwright(
@@ -274,13 +332,10 @@ def scrape_google_maps_playwright(
     *,
     job_control: AbortFn | None = None,
     headless: bool = True,
-    max_seconds: float = 120.0,
+    max_seconds: float = 70.0,
     require_no_website: bool = False,
 ) -> list[dict]:
-    """
-    Scrape Google Maps with Playwright (upstream field extraction).
-    Returns Apify-like raw dicts (phone required).
-    """
+    """Scrape Google Maps listings with Playwright. Phone required."""
     keyword = (keyword or "").strip()
     location = (location or "").strip()
     limit = max(1, min(int(limit or 20), 40))
@@ -290,8 +345,7 @@ def scrape_google_maps_playwright(
     search_query = (
         f"{keyword} in {location}".strip() if keyword and location else (keyword or location)
     )
-    per_card = 3.5 if require_no_website else 2.8
-    budget = max(50.0, min(float(max_seconds or 90.0), 20.0 + limit * per_card))
+    budget = max(28.0, min(float(max_seconds or 55.0), 10.0 + limit * 2.2))
     deadline = time.monotonic() + budget
 
     def aborted() -> bool:
@@ -309,13 +363,13 @@ def scrape_google_maps_playwright(
     seen_names: set[str] = set()
     seen_phones: set[str] = set()
 
-    slot_wait_deadline = time.monotonic() + max(60.0, budget)
+    slot_wait_deadline = time.monotonic() + 25.0
     acquired = False
     lock = _get_maps_lock()
     while time.monotonic() < slot_wait_deadline:
         if job_control and job_control():
             return []
-        if lock.acquire(timeout=2.0):
+        if lock.acquire(timeout=1.0):
             acquired = True
             break
     if not acquired:
@@ -324,6 +378,22 @@ def scrape_google_maps_playwright(
 
     deadline = time.monotonic() + budget
     started = time.monotonic()
+
+    def add_item(item: dict | None) -> None:
+        if not item:
+            return
+        name_key = (item.get("title") or "").lower()
+        phone_key = re.sub(r"\D", "", item.get("phone") or "")
+        if not name_key or name_key in _SKIP_NAMES:
+            return
+        if name_key in seen_names or (phone_key and phone_key in seen_phones):
+            return
+        if require_no_website and item.get("website"):
+            return
+        seen_names.add(name_key)
+        if phone_key:
+            seen_phones.add(phone_key)
+        results.append(item)
 
     try:
         with sync_playwright() as p:
@@ -345,8 +415,11 @@ def scrape_google_maps_playwright(
                         "Chrome/122.0.0.0 Safari/537.36"
                     ),
                 )
+                context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                )
                 page = context.new_page()
-                page.set_default_timeout(10000)
+                page.set_default_timeout(6000)
 
                 maps_url = "https://www.google.com/maps/search/" + quote_plus(search_query)
                 logger.info(
@@ -355,104 +428,90 @@ def scrape_google_maps_playwright(
                     limit,
                     budget,
                 )
-                # Direct search URL is reliable in headless (upstream search-box often times out)
-                page.goto(maps_url, wait_until="domcontentloaded", timeout=25000)
-                page.wait_for_timeout(1500)
+                page.goto(maps_url, wait_until="domcontentloaded", timeout=18000)
+                page.wait_for_timeout(700)
                 _dismiss_consent(page)
-                page.wait_for_timeout(800)
 
                 try:
-                    page.wait_for_selector(_LISTING_CSS, timeout=15000)
+                    page.wait_for_selector(_LISTING_CSS, timeout=8000)
                 except Exception:
+                    if _page_blocked(page):
+                        raise RuntimeError(
+                            "Google Maps blocked this server (captcha / unusual traffic). "
+                            "Try again later or scrape from a machine with a residential IP."
+                        )
                     logger.warning("Playwright Maps: no listings for %r", search_query)
                     return results
 
-                # Upstream scroll: hover + mouse.wheel
+                # Light scroll — enough cards, not a long stall
                 try:
-                    page.locator(_LISTING_CSS).first.hover(timeout=2500)
+                    page.locator(_LISTING_CSS).first.hover(timeout=1500)
                 except Exception:
                     pass
-
-                previously_counted = 0
-                stall_rounds = 0
-                target = min(limit + 8, max(limit * 2, 12))
-                if require_no_website:
-                    target = min(max(limit * 3, 18), 50)
-                while not aborted():
-                    count = _listing_count(page)
-                    if count >= target:
-                        break
-                    page.mouse.wheel(0, 10000)
-                    page.wait_for_timeout(1800)
-                    new_count = _listing_count(page)
-                    if new_count <= previously_counted:
-                        stall_rounds += 1
-                        if stall_rounds >= 3:
-                            break
+                previously = 0
+                stalls = 0
+                target = min(max(limit + 4, 8), 18)
+                while not aborted() and _listing_count(page) < target and stalls < 2:
+                    page.mouse.wheel(0, 8000)
+                    page.wait_for_timeout(700)
+                    n = _listing_count(page)
+                    if n <= previously:
+                        stalls += 1
                     else:
-                        stall_rounds = 0
-                        previously_counted = new_count
+                        stalls = 0
+                        previously = n
 
-                try:
-                    raw_links = page.locator(_LISTING_CSS).all()
-                except Exception:
-                    raw_links = page.locator(_LISTING_XPATH).all()
+                cards = _feed_cards(page)
+                logger.info("Playwright Maps: %s feed cards for %r", len(cards), search_query)
 
-                max_scan = limit * 3 if require_no_website else max(limit * 2, limit + 6)
-                listings: list[tuple] = []
-                seen_aria: set[str] = set()
-                for link in raw_links:
-                    if len(listings) >= max_scan:
-                        break
-                    try:
-                        aria = (link.get_attribute("aria-label") or "").strip()
-                    except Exception:
-                        aria = ""
-                    key = aria.lower() if aria else ""
-                    if key and (key in seen_aria or key in _SKIP_NAMES):
-                        continue
-                    if key:
-                        seen_aria.add(key)
-                    listings.append((link, aria))
-
-                logger.info(
-                    "Playwright Maps: opening %s cards (no_website=%s)",
-                    len(listings),
-                    require_no_website,
-                )
-
-                for link, aria_name in listings:
+                # Fast path: phones already visible on result cards
+                for card in cards:
                     if aborted() or len(results) >= limit:
                         break
+                    name = (card.get("name") or "").strip()
+                    if not name or name.lower() in _SKIP_NAMES:
+                        continue
+                    phone = _phone_from_text(card.get("text") or "")
+                    if not phone:
+                        continue
+                    phone, digits = _normalize_phone(phone)
+                    add_item(
+                        _lead_dict(
+                            name=name,
+                            phone=phone,
+                            phone_unformatted=digits,
+                            website=None,
+                            address=None,
+                            keyword=keyword,
+                            location=location,
+                            url=card.get("href") or page.url,
+                        )
+                    )
+
+                # Click only cards still missing a phone (same DOM order as feed extract)
+                for index, card in enumerate(cards):
+                    if aborted() or len(results) >= limit:
+                        break
+                    name = (card.get("name") or "").strip()
+                    if not name or name.lower() in seen_names or name.lower() in _SKIP_NAMES:
+                        continue
                     try:
-                        # Click the place link itself (more reliable than parent in headless)
-                        link.click(timeout=4000)
-                        page.wait_for_timeout(1800)
+                        loc = page.locator(_LISTING_CSS).nth(index)
+                        loc.click(timeout=2500)
                         try:
                             page.wait_for_selector(
-                                'button[data-item-id*="phone:tel:"], a[data-item-id="authority"], button[data-item-id="address"], h1.DUwDvf',
-                                timeout=3000,
+                                'button[data-item-id*="phone:tel:"], a[href^="tel:"], h1.DUwDvf',
+                                timeout=1800,
                             )
                         except Exception:
-                            page.wait_for_timeout(700)
-
+                            page.wait_for_timeout(350)
                         item = _read_panel_upstream(
                             page,
                             keyword=keyword,
                             location=location,
-                            fallback_name=aria_name,
-                            require_no_website=require_no_website,
+                            fallback_name=name,
                         )
-                        if not item:
-                            continue
-                        name_key = (item.get("title") or "").lower()
-                        phone_key = re.sub(r"\D", "", item.get("phone") or "")
-                        if name_key in seen_names or (phone_key and phone_key in seen_phones):
-                            continue
-                        seen_names.add(name_key)
-                        if phone_key:
-                            seen_phones.add(phone_key)
-                        results.append(item)
+                        add_item(item)
                     except Exception as exc:
                         logger.debug("Playwright Maps listing failed: %s", exc)
                         continue

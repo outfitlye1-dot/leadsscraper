@@ -134,14 +134,13 @@ class AllInOneScraperService:
             ml = maps_loc or location
             lim = result_limit if result_limit is not None else per_source_limit
             job_control = (lambda: _store.should_abort(job_id)) if job_id else None
-            no_site = data.website_filter == WebsiteFilter.without_website
-            # Local Playwright only — https://github.com/kevmaindev/Googles-Maps-Scraper
+            # Collect all phone leads first; website filter runs after merge.
             return self.apify_service.scrape_maps_playwright_local(
                 mk,
                 ml,
                 lim,
                 job_control=job_control,
-                require_no_website=no_site,
+                require_no_website=False,
             )
 
         def scrape_web() -> list[dict]:
@@ -435,63 +434,27 @@ class AllInOneScraperService:
             preferred = apply_website_filter(leads_data, data.website_filter)
             filtered_website = before_website - len(preferred)
 
-            # Soft-fill: "without website" is rare on Maps — top up with phone leads
+            # Soft-fill from the same batch — do not scrape Maps a second time
             if (
                 data.website_filter == WebsiteFilter.without_website
-                and len(preferred) < max(3, min(int(data.limit or 10), 8))
-                and needs_maps
+                and len(preferred) < int(data.limit or 10)
             ):
-                prog(
-                    80,
-                    "google_maps",
-                    "Few no-website businesses — topping up with phone leads…",
+                rest = [
+                    lead
+                    for lead in leads_data
+                    if lead not in preferred
+                    and (
+                        (lead.get("phone") and str(lead.get("phone")).strip())
+                        or (lead.get("email") and is_valid_email(lead.get("email")))
+                    )
+                ]
+                leads_data = (list(preferred) + rest)[: data.limit]
+                log(
+                    "info",
+                    "filter",
+                    f"Kept {len(preferred)} without website + "
+                    f"{max(0, len(leads_data) - len(preferred))} phone fill",
                 )
-                try:
-                    from app.services.scraper_job_store import scraper_job_store as _job_store
-
-                    job_control = (
-                        (lambda: _job_store.should_abort(job_id)) if job_id else None
-                    )
-                    topup = self.apify_service.scrape_maps_playwright_local(
-                        maps_keyword or keyword,
-                        maps_location or location,
-                        max(int(data.limit or 10), 12),
-                        job_control=job_control,
-                        require_no_website=False,
-                    )
-                    if data.enrich_contacts:
-                        topup = self.enrichment_service.enrich_leads_batch(topup)
-                    else:
-                        topup = [
-                            sanitize_lead_contacts(lead, search_location=location or None)
-                            for lead in topup
-                        ]
-                    merged = dedupe_leads(list(preferred) + list(topup))
-                    no_site = [
-                        lead for lead in merged if not has_real_website(lead.get("website"))
-                    ]
-                    with_site = [
-                        lead
-                        for lead in merged
-                        if has_real_website(lead.get("website"))
-                        and (
-                            (lead.get("phone") and str(lead.get("phone")).strip())
-                            or (lead.get("email") and is_valid_email(lead.get("email")))
-                        )
-                    ]
-                    leads_data = (no_site + with_site)[: data.limit]
-                    leads_discovered = max(leads_discovered, len(merged))
-                    filtered_website = max(0, before_website - len(no_site))
-                    log(
-                        "info",
-                        "filter",
-                        f"Kept {len(no_site)} without website + "
-                        f"{max(0, len(leads_data) - len(no_site))} phone fill",
-                    )
-                except Exception as exc:
-                    leads_data = preferred
-                    errors.append(f"Maps top-up: {exc}")
-                    log("warn", "filter", f"Top-up failed: {exc}")
             else:
                 leads_data = preferred
         else:
