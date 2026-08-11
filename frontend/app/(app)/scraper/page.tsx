@@ -485,6 +485,13 @@ function ScraperPageContent() {
               </button>
             ))}
           </div>
+          <p className="text-xs text-muted-foreground">
+            {websiteFilter === "without_website"
+              ? "Only businesses with no website on Google Maps (fewer results, takes longer)."
+              : websiteFilter === "with_website"
+                ? "Only businesses that list a website on Google Maps."
+                : "All phone leads, with or without a website."}
+          </p>
           {websiteFilter !== "without_website" ? (
             <button
               type="button"

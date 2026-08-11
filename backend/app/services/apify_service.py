@@ -216,14 +216,19 @@ class ApifyService:
         *,
         job_control=None,
         require_no_website: bool = False,
+        require_website: bool = False,
     ) -> list[dict]:
         """Google Maps via Playwright — adapted from kevmaindev/Googles-Maps-Scraper."""
         from app.core.config import get_settings
         from app.scrapers.google_maps_playwright import scrape_google_maps_playwright
+        from app.utils.website_utils import has_real_website
 
         settings = get_settings()
         fetch_limit = max(1, min(int(limit or 20), 30))
         max_seconds = float(settings.SCRAPER_PLAYWRIGHT_MAPS_MAX_SECONDS or 55.0)
+        if require_no_website or require_website:
+            fetch_limit = min(max(limit * 2, 12), 30)
+            max_seconds = max(max_seconds, 70.0)
         raw_items = scrape_google_maps_playwright(
             keyword=keyword,
             location=self._normalize_location(location),
@@ -232,12 +237,16 @@ class ApifyService:
             headless=bool(settings.SCRAPER_PLAYWRIGHT_MAPS_HEADLESS),
             max_seconds=max_seconds,
             require_no_website=require_no_website,
+            require_website=require_website,
         )
         leads_data: list[dict] = []
         for item in raw_items:
             lead_data = self._map_apify_item(item, location)
             lead_data = normalize_website_field(lead_data)
-            if require_no_website and lead_data.get("website"):
+            has_site = has_real_website(lead_data.get("website"))
+            if require_no_website and has_site:
+                continue
+            if require_website and not has_site:
                 continue
             company = lead_data.get("company_name")
             if company and company != "Unknown":

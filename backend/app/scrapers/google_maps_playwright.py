@@ -334,6 +334,7 @@ def scrape_google_maps_playwright(
     headless: bool = True,
     max_seconds: float = 70.0,
     require_no_website: bool = False,
+    require_website: bool = False,
 ) -> list[dict]:
     """Scrape Google Maps listings with Playwright. Phone required."""
     keyword = (keyword or "").strip()
@@ -345,7 +346,10 @@ def scrape_google_maps_playwright(
     search_query = (
         f"{keyword} in {location}".strip() if keyword and location else (keyword or location)
     )
-    budget = max(28.0, min(float(max_seconds or 55.0), 10.0 + limit * 2.2))
+    # Website filters need panel clicks (feed cards don't show website reliably)
+    need_panel = require_no_website or require_website
+    per = 2.8 if need_panel else 2.2
+    budget = max(28.0, min(float(max_seconds or 55.0), 10.0 + limit * per))
     deadline = time.monotonic() + budget
 
     def aborted() -> bool:
@@ -389,6 +393,8 @@ def scrape_google_maps_playwright(
         if name_key in seen_names or (phone_key and phone_key in seen_phones):
             return
         if require_no_website and item.get("website"):
+            return
+        if require_website and not item.get("website"):
             return
         seen_names.add(name_key)
         if phone_key:
@@ -450,7 +456,7 @@ def scrape_google_maps_playwright(
                     pass
                 previously = 0
                 stalls = 0
-                target = min(max(limit + 4, 8), 18)
+                target = min(max(limit * 3, 14), 28) if need_panel else min(max(limit + 4, 8), 18)
                 while not aborted() and _listing_count(page) < target and stalls < 2:
                     page.mouse.wheel(0, 8000)
                     page.wait_for_timeout(700)
@@ -464,31 +470,32 @@ def scrape_google_maps_playwright(
                 cards = _feed_cards(page)
                 logger.info("Playwright Maps: %s feed cards for %r", len(cards), search_query)
 
-                # Fast path: phones already visible on result cards
-                for card in cards:
-                    if aborted() or len(results) >= limit:
-                        break
-                    name = (card.get("name") or "").strip()
-                    if not name or name.lower() in _SKIP_NAMES:
-                        continue
-                    phone = _phone_from_text(card.get("text") or "")
-                    if not phone:
-                        continue
-                    phone, digits = _normalize_phone(phone)
-                    add_item(
-                        _lead_dict(
-                            name=name,
-                            phone=phone,
-                            phone_unformatted=digits,
-                            website=None,
-                            address=None,
-                            keyword=keyword,
-                            location=location,
-                            url=card.get("href") or page.url,
+                # Fast path only when website filter is "all" — cards omit website
+                if not need_panel:
+                    for card in cards:
+                        if aborted() or len(results) >= limit:
+                            break
+                        name = (card.get("name") or "").strip()
+                        if not name or name.lower() in _SKIP_NAMES:
+                            continue
+                        phone = _phone_from_text(card.get("text") or "")
+                        if not phone:
+                            continue
+                        phone, digits = _normalize_phone(phone)
+                        add_item(
+                            _lead_dict(
+                                name=name,
+                                phone=phone,
+                                phone_unformatted=digits,
+                                website=None,
+                                address=None,
+                                keyword=keyword,
+                                location=location,
+                                url=card.get("href") or page.url,
+                            )
                         )
-                    )
 
-                # Click only cards still missing a phone (same DOM order as feed extract)
+                # Open panels for missing phones, and always when website filter is on
                 for index, card in enumerate(cards):
                     if aborted() or len(results) >= limit:
                         break

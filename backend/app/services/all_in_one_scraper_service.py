@@ -134,13 +134,13 @@ class AllInOneScraperService:
             ml = maps_loc or location
             lim = result_limit if result_limit is not None else per_source_limit
             job_control = (lambda: _store.should_abort(job_id)) if job_id else None
-            # Collect all phone leads first; website filter runs after merge.
             return self.apify_service.scrape_maps_playwright_local(
                 mk,
                 ml,
                 lim,
                 job_control=job_control,
-                require_no_website=False,
+                require_no_website=data.website_filter == WebsiteFilter.without_website,
+                require_website=data.website_filter == WebsiteFilter.with_website,
             )
 
         def scrape_web() -> list[dict]:
@@ -433,30 +433,12 @@ class AllInOneScraperService:
             before_website = len(leads_data)
             preferred = apply_website_filter(leads_data, data.website_filter)
             filtered_website = before_website - len(preferred)
-
-            # Soft-fill from the same batch — do not scrape Maps a second time
-            if (
-                data.website_filter == WebsiteFilter.without_website
-                and len(preferred) < int(data.limit or 10)
-            ):
-                rest = [
-                    lead
-                    for lead in leads_data
-                    if lead not in preferred
-                    and (
-                        (lead.get("phone") and str(lead.get("phone")).strip())
-                        or (lead.get("email") and is_valid_email(lead.get("email")))
-                    )
-                ]
-                leads_data = (list(preferred) + rest)[: data.limit]
-                log(
-                    "info",
-                    "filter",
-                    f"Kept {len(preferred)} without website + "
-                    f"{max(0, len(leads_data) - len(preferred))} phone fill",
-                )
-            else:
-                leads_data = preferred
+            leads_data = preferred
+            log(
+                "info",
+                "filter",
+                f"Website filter {data.website_filter.value}: kept {len(leads_data)} / {before_website}",
+            )
         else:
             prog(78, "filter", "Background mode — keeping all discovered leads")
 
