@@ -293,9 +293,21 @@ export default function WhatsAppWebSettingsPage() {
           )}
 
           {!status?.enabled && (
-            <p className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
-              Backend pe <code className="text-xs">WA_WEB_ENABLED=true</code> set karke server restart karo.
-            </p>
+            <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+              <p className="font-medium text-foreground">
+                WhatsApp Web AI is off on the live server (Railway).
+              </p>
+              <p className="text-muted-foreground">
+                Railway pe Chrome/QR nahi chal sakta. Live site pe messages ke liye{" "}
+                <strong>Cloud API</strong> (Messages page) use karo.
+              </p>
+              <p className="text-muted-foreground">
+                Web AI + daily outreach ke liye app <strong>is PC pe local</strong> chalao:
+                backend <code className="text-xs">WA_WEB_ENABLED=true</code> (already in{" "}
+                <code className="text-xs">backend/.env</code>), then{" "}
+                <code className="text-xs">http://localhost:3000</code> se Connect karo.
+              </p>
+            </div>
           )}
 
           <div className="flex flex-wrap gap-2">
