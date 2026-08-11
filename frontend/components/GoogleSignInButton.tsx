@@ -10,11 +10,15 @@ export function GoogleSignInButton({ label = "Continue with Google" }: { label?:
   const [isStarting, setIsStarting] = useState(false);
 
   const onGoogleSignIn = async () => {
-    const redirectUri = `${window.location.origin}/api/auth/google/callback`;
+    const origin = window.location.origin;
+    const isLocal = /localhost|127\.0\.0\.1/i.test(origin);
     setIsStarting(true);
     try {
+      // Production: backend uses Railway callback. Local: Next.js proxies /api to FastAPI.
       const { data } = await api.get<{ url: string }>("/auth/google/start", {
-        params: { redirect_uri: redirectUri },
+        params: isLocal
+          ? { redirect_uri: `${origin}/api/auth/google/callback` }
+          : {},
       });
       window.location.href = data.url;
     } catch (error) {

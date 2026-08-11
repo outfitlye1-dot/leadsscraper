@@ -54,9 +54,53 @@ NEXT_PUBLIC_API_URL=https://YOUR-API.up.railway.app/api
 ## 3) After both live
 
 1. Put real Vercel URL into Railway `FRONTEND_URL` + `CORS_ORIGINS`
-2. Google OAuth redirect URIs (if used):
-   - `https://YOUR-APP.vercel.app/api/auth/google/callback`
-3. Login with admin email/password → add Groq keys in Admin
+2. Login with admin email/password → add Groq keys in Admin
+
+---
+
+## 4) Google sign-in (required for “Continue with Google”)
+
+This is **not** in the GitHub code. Create a Google OAuth client, then set keys on **Railway** (backend).
+
+### A) Google Cloud Console
+
+1. Open [Google Cloud Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials)
+2. Create project (or pick existing) → **Create credentials → OAuth client ID**
+3. If asked, configure OAuth consent screen:
+   - User type: **External**
+   - App name: LeadGen / LeadScraper
+   - Add your email as test user while the app is in Testing
+4. Application type: **Web application**
+5. **Authorized JavaScript origins**
+   - `https://leadsscraper.vercel.app`
+   - `https://leadsscraper-production.up.railway.app`
+   - `http://localhost:3000`
+6. **Authorized redirect URIs** (exact, no trailing slash)
+   - `https://leadsscraper-production.up.railway.app/api/auth/google/callback`
+   - `https://leadsscraper.vercel.app/api/auth/google/callback`
+   - `http://localhost:3000/api/auth/google/callback`
+7. Copy **Client ID** and **Client secret**
+
+`redirect_uri_mismatch` = Google Console URI is not **exactly** the Railway callback above.
+
+### B) Railway variables
+
+Railway → backend service → Variables:
+
+```
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+BACKEND_PUBLIC_URL=https://leadsscraper-production.up.railway.app
+GOOGLE_AUTH_REDIRECT_URI=https://leadsscraper-production.up.railway.app/api/auth/google/callback
+FRONTEND_URL=https://leadsscraper.vercel.app
+CORS_ORIGINS=https://leadsscraper.vercel.app
+```
+
+Redeploy / restart the Railway service after saving.
+
+Until these are set, Google sign-in returns:
+`Google sign-in not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.`
+Email/password login still works.
 
 ---
 

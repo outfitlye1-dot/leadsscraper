@@ -20,10 +20,17 @@ GOOGLE_AUTH_SCOPES = ["openid", "email", "profile"]
 GOOGLE_AUTH_CALLBACK_PATH = "/api/auth/google/callback"
 
 
-def _callback_origin(redirect_uri: str) -> str:
+def _is_local_url(url: str) -> bool:
+    lower = (url or "").lower()
+    return "localhost" in lower or "127.0.0.1" in lower
+
+
+def _origin(url: str) -> str:
     from urllib.parse import urlparse
 
-    parsed = urlparse(redirect_uri)
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url.rstrip("/")
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
@@ -32,34 +39,58 @@ class GoogleAuthService:
         self.db = db
         self.users = UserRepository(db)
 
+    def _canonical_redirect_uri(self) -> str:
+        """Google must redirect to FastAPI (Railway), not Vercel."""
+        settings = get_settings()
+        explicit = (settings.GOOGLE_AUTH_REDIRECT_URI or "").rstrip("/")
+        backend = (settings.BACKEND_PUBLIC_URL or "").rstrip("/")
+        frontend = (settings.FRONTEND_URL or "").rstrip("/")
+
+        if explicit and not _is_local_url(explicit):
+            # If someone pointed this at Vercel by mistake, prefer Railway
+            if backend and not _is_local_url(backend) and "/api/auth/google/callback" in explicit:
+                if _origin(explicit) == _origin(frontend):
+                    return f"{backend}{GOOGLE_AUTH_CALLBACK_PATH}"
+            return explicit
+        if backend and not _is_local_url(backend):
+            return f"{backend}{GOOGLE_AUTH_CALLBACK_PATH}"
+        if explicit:
+            return explicit
+        return f"{frontend}{GOOGLE_AUTH_CALLBACK_PATH}" if frontend else (
+            "http://localhost:3000/api/auth/google/callback"
+        )
+
     def _allowed_redirect_uris(self) -> set[str]:
         settings = get_settings()
         frontend = settings.FRONTEND_URL.rstrip("/")
+        backend = (settings.BACKEND_PUBLIC_URL or "").rstrip("/")
         candidates = {
+            self._canonical_redirect_uri(),
             settings.GOOGLE_AUTH_REDIRECT_URI.rstrip("/"),
             f"{frontend}{GOOGLE_AUTH_CALLBACK_PATH}",
+            f"{backend}{GOOGLE_AUTH_CALLBACK_PATH}" if backend else "",
             "http://localhost:3000/api/auth/google/callback",
             "http://127.0.0.1:3000/api/auth/google/callback",
         }
         return {uri for uri in candidates if uri}
 
     def _resolve_redirect_uri(self, requested: str | None) -> str:
-        allowed = self._allowed_redirect_uris()
-        if not allowed:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Google sign-in redirect URI is not configured.",
-            )
-        if not requested:
-            return next(iter(sorted(allowed)))
+        canonical = self._canonical_redirect_uri()
+        settings = get_settings()
+        # Split deploy: Vercel origin is not a valid Google callback (no FastAPI there).
+        if settings.is_production or (settings.BACKEND_PUBLIC_URL and not _is_local_url(settings.BACKEND_PUBLIC_URL)):
+            return canonical
 
+        allowed = self._allowed_redirect_uris()
+        if not requested:
+            return canonical
         normalized = requested.strip().rstrip("/")
         if normalized not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     "Invalid Google redirect URI. Add this exact URI in Google Cloud Console: "
-                    f"{normalized}"
+                    f"{canonical}"
                 ),
             )
         return normalized
@@ -75,7 +106,7 @@ class GoogleAuthService:
         state = secrets.token_urlsafe(32)
         _auth_oauth_states[state] = {
             "redirect_uri": resolved_redirect_uri,
-            "frontend_origin": _callback_origin(resolved_redirect_uri),
+            "frontend_origin": _origin(settings.FRONTEND_URL) or _origin(resolved_redirect_uri),
         }
         params = {
             "client_id": settings.GOOGLE_CLIENT_ID,
