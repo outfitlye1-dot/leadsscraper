@@ -52,6 +52,9 @@ export function formatApiError(err: unknown, fallback = "Something went wrong"):
   if (formatted) return formatted;
   if (typeof err === "object" && err && "message" in err) {
     const msg = String((err as { message: unknown }).message || "");
+    if (/^network error$/i.test(msg)) {
+      return "Cannot reach the API (Network Error). Check Railway is online, or restart the backend and try again.";
+    }
     if (msg && !/^request failed with status code/i.test(msg)) {
       return msg;
     }

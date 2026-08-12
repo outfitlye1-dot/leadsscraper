@@ -129,7 +129,9 @@ def create_app() -> FastAPI:
             )
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal server error"},
+            content={
+                "detail": f"Internal server error: {type(exc).__name__}: {exc}"[:500]
+            },
         )
 
     app.include_router(auth.router)

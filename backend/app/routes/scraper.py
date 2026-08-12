@@ -115,8 +115,17 @@ def start_scraper(
     data: ScraperStartRequest,
     current_user: User = Depends(get_current_user),
 ) -> ScraperJobStartResponse:
-    job_id = start_scraper_job(current_user.id, data)
-    return ScraperJobStartResponse(job_id=job_id)
+    try:
+        job_id = start_scraper_job(current_user.id, data)
+        return ScraperJobStartResponse(job_id=job_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("scraper/start failed for user %s: %s", current_user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not start scraper: {type(exc).__name__}: {exc}",
+        ) from exc
 
 
 @router.post(

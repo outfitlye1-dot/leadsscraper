@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import HTTPException
 
@@ -28,6 +29,9 @@ from app.utils.website_utils import WebsiteFilter
 logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, str, str], None]
 
+# Bounded pool — avoids "can't start new thread" / pending-forever jobs on Railway
+_SCRAPE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scrape-job")
+
 
 def _make_callbacks(job_id: str) -> tuple[ProgressCallback, Callable[[str, str, str], None]]:
     def on_progress(percent: int, stage: str, message: str) -> None:
@@ -44,16 +48,17 @@ def _run_job(job_id: str, user_id: int, data: ScraperStartRequest) -> None:
     from app.scraper.metrics import ScrapeMetrics
     from app.scrapers.checkpoint import delete_checkpoint, save_checkpoint
 
-    db = SessionLocal()
+    scraper_job_store.update(
+        job_id, status="running", progress=1, stage="init", message="Starting scraper..."
+    )
+    db = None
     metrics = ScrapeMetrics()
     scraper_job_store.bind_metrics(job_id, metrics)
     try:
         on_progress, on_log = _make_callbacks(job_id)
-        scraper_job_store.update(
-            job_id, status="running", progress=2, stage="init", message="Starting scraper..."
-        )
         on_log("info", "init", "Job started")
         scraper_job_store.update(job_id, progress=3, stage="init", message="Loading account...")
+        db = SessionLocal()
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             scraper_job_store.fail(job_id, "User not found")
@@ -63,28 +68,11 @@ def _run_job(job_id: str, user_id: int, data: ScraperStartRequest) -> None:
             scraper_job_store.update(job_id, status="cancelled", message="Cancelled before start")
             return
 
-        # Cache lookup can block forever on a locked SQLite DB (zombie scrape threads).
-        # Hard-cap it so the UI never sits at 2%. Use a separate session (thread-safe).
+        # Cache lookup (Postgres is fine inline; avoid nested thread pools on Railway)
         scraper_job_store.update(job_id, progress=4, stage="init", message="Checking cache...")
         cached = None
         try:
-            from concurrent.futures import ThreadPoolExecutor
-
-            def _try_cache():
-                cache_db = SessionLocal()
-                try:
-                    return ScrapeCacheService(cache_db).try_fulfill_from_cache(user_id, data)
-                finally:
-                    cache_db.close()
-
-            cache_ex = ThreadPoolExecutor(max_workers=1)
-            try:
-                cached = cache_ex.submit(_try_cache).result(timeout=3.0)
-            except TimeoutError:
-                on_log("warn", "cache", "Cache check timed out — continuing with live scrape")
-                cached = None
-            finally:
-                cache_ex.shutdown(wait=False, cancel_futures=True)
+            cached = ScrapeCacheService(db).try_fulfill_from_cache(user_id, data)
         except Exception as cache_exc:
             on_log("warn", "cache", f"Cache skipped: {cache_exc}")
             cached = None
@@ -136,10 +124,9 @@ def _run_job(job_id: str, user_id: int, data: ScraperStartRequest) -> None:
         scraper_job_store.append_log(job_id, str(exc), level="error", stage="error")
         scraper_job_store.fail(job_id, str(exc))
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
-
-def start_scraper_job(user_id: int, data: ScraperStartRequest) -> str:
     if scraper_job_store.get_active_auto_job(user_id):
         raise HTTPException(
             status_code=409,
@@ -158,12 +145,22 @@ def start_scraper_job(user_id: int, data: ScraperStartRequest) -> str:
         logger.info("Replaced active manual scrape(s) %s for user %s", replaced, user_id)
 
     job_id = scraper_job_store.create(user_id, mode="single")
-    thread = threading.Thread(
-        target=_run_job,
-        args=(job_id, user_id, data),
-        daemon=True,
-    )
-    thread.start()
+    try:
+        _SCRAPE_EXECUTOR.submit(_run_job, job_id, user_id, data)
+    except Exception as exc:
+        logger.exception("Failed to queue scrape job %s: %s", job_id, exc)
+        scraper_job_store.fail(
+            job_id,
+            "Server could not start the scrape worker (often low memory). "
+            "Restart the Railway service and try again with limit 3–5.",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Server is out of scrape workers/memory. "
+                "Restart the backend on Railway, then retry with a smaller limit."
+            ),
+        ) from exc
     return job_id
 
 
