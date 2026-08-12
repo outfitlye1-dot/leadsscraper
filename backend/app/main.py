@@ -162,6 +162,7 @@ def create_app() -> FastAPI:
         payload: dict = {
             "status": "healthy",
             "version": settings.APP_VERSION,
+            "build": "scrape-pool-7f0ee66",
         }
         if warnings:
             payload["warnings"] = warnings
