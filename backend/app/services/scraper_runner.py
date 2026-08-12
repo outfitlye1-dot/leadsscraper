@@ -127,6 +127,8 @@ def _run_job(job_id: str, user_id: int, data: ScraperStartRequest) -> None:
         if db is not None:
             db.close()
 
+
+def start_scraper_job(user_id: int, data: ScraperStartRequest) -> str:
     if scraper_job_store.get_active_auto_job(user_id):
         raise HTTPException(
             status_code=409,
@@ -145,22 +147,23 @@ def _run_job(job_id: str, user_id: int, data: ScraperStartRequest) -> None:
         logger.info("Replaced active manual scrape(s) %s for user %s", replaced, user_id)
 
     job_id = scraper_job_store.create(user_id, mode="single")
+    # Always return job_id — never 500 after create (browser shows Network Error on bare 500/CORS)
     try:
+        scraper_job_store.update(
+            job_id,
+            status="running",
+            progress=1,
+            stage="init",
+            message="Queued…",
+        )
         _SCRAPE_EXECUTOR.submit(_run_job, job_id, user_id, data)
     except Exception as exc:
         logger.exception("Failed to queue scrape job %s: %s", job_id, exc)
         scraper_job_store.fail(
             job_id,
-            "Server could not start the scrape worker (often low memory). "
-            "Restart the Railway service and try again with limit 3–5.",
+            "Server could not start the scrape worker (often low memory / stuck threads). "
+            "Restart the Railway service, then retry with limit 3–5.",
         )
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Server is out of scrape workers/memory. "
-                "Restart the backend on Railway, then retry with a smaller limit."
-            ),
-        ) from exc
     return job_id
 
 

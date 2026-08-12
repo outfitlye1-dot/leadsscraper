@@ -107,14 +107,20 @@ def create_app() -> FastAPI:
     )
 
     @app.exception_handler(HTTPException)
-    async def http_exception_handler(_request: Request, exc: HTTPException):
-        return JSONResponse(
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        response = JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
         )
+        origin = request.headers.get("origin")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
+        return response
 
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(_request: Request, exc: Exception):
+    async def unhandled_exception_handler(request: Request, exc: Exception):
         import logging
 
         logging.getLogger(__name__).exception("Unhandled API error: %s", exc)
@@ -123,16 +129,23 @@ def create_app() -> FastAPI:
         from app.utils.sqlite_retry import is_sqlite_locked_error
 
         if isinstance(exc, OperationalError) and is_sqlite_locked_error(exc):
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=503,
                 content={"detail": "Server is busy. Please try again in a few seconds."},
             )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "detail": f"Internal server error: {type(exc).__name__}: {exc}"[:500]
-            },
-        )
+        else:
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "detail": f"Internal server error: {type(exc).__name__}: {exc}"[:500]
+                },
+            )
+        origin = request.headers.get("origin")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
+        return response
 
     app.include_router(auth.router)
     app.include_router(leads.router)
@@ -162,7 +175,7 @@ def create_app() -> FastAPI:
         payload: dict = {
             "status": "healthy",
             "version": settings.APP_VERSION,
-            "build": "scrape-pool-7f0ee66",
+            "build": "scrape-cors-fix-v2",
         }
         if warnings:
             payload["warnings"] = warnings
