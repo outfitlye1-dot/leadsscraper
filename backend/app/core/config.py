@@ -169,6 +169,28 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def cap_workers_on_constrained_hosts(self) -> "Settings":
+        """Railway containers hit 'can't start new thread' with large pools + Playwright."""
+        import os
+
+        on_railway = bool(
+            os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_SERVICE_ID")
+        )
+        on_postgres = "postgres" in (self.DATABASE_URL or "").lower()
+        if not (on_railway or (self.is_production and on_postgres)):
+            return self
+        self.SCRAPER_WORKERS = min(self.SCRAPER_WORKERS, 2)
+        self.SCRAPER_MIN_WORKERS = 1
+        self.SCRAPER_MAX_WORKERS = min(self.SCRAPER_MAX_WORKERS, 2)
+        self.SCRAPER_SEARCH_MAX_WORKERS = min(self.SCRAPER_SEARCH_MAX_WORKERS, 2)
+        self.SCRAPER_PLAYWRIGHT_CONTEXTS = 1
+        self.SCRAPER_PLAYWRIGHT_MAPS_CONCURRENCY = 1
+        self.SCRAPER_PARALLEL_SOURCES = False
+        self.SCRAPER_INTERNET_PIPELINE = False
+        self.SCRAPER_FAST_MODE = True
+        return self
+
+    @model_validator(mode="after")
     def normalize_smtp(self) -> "Settings":
         if self.SMTP_PASSWORD:
             self.SMTP_PASSWORD = self.SMTP_PASSWORD.strip().strip('"').strip("'")

@@ -81,9 +81,12 @@ class EnrichmentService:
             if on_progress:
                 on_progress(done, total)
 
+        from app.utils.host_limits import constrained_worker_cap
+
         workers = min(
-            6 if fast else settings.SCRAPER_MAX_WORKERS,
+            2 if fast else settings.SCRAPER_MAX_WORKERS,
             compute_parallel_workers(len(need_indices), max_workers=settings.SCRAPER_MAX_WORKERS),
+            constrained_worker_cap(),
         )
         # Hard wall clock so enrich never stalls the scrape at ~60%
         budget = 18.0 if fast else 60.0
@@ -102,7 +105,37 @@ class EnrichmentService:
 
         pw_cm = nullcontext() if fast else playwright_session()
         with pw_cm:
-            executor = ThreadPoolExecutor(max_workers=workers)
+            from app.utils.host_limits import is_constrained_host
+
+            # On Railway, never open another pool — OS thread limit is already tight.
+            use_pool = workers > 1 and not is_constrained_host()
+            executor = None
+            if use_pool:
+                try:
+                    executor = ThreadPoolExecutor(max_workers=workers)
+                except RuntimeError:
+                    executor = None
+            if executor is None:
+                for index in need_indices:
+                    if time.monotonic() >= deadline:
+                        break
+                    try:
+                        enriched[index] = self.enrich_lead(
+                            leads_data[index], fast=fast, metrics=metrics
+                        )
+                    except Exception:
+                        enriched[index] = sanitize_lead_contacts(
+                            dict(leads_data[index]),
+                            search_location=leads_data[index].get("country"),
+                        )
+                    done += 1
+                    if on_progress:
+                        on_progress(done, total)
+                if metrics is not None:
+                    metrics.set("active_workers", 0)
+                    metrics.set("queue_size", 0)
+                return [item for item in enriched if item is not None]
+
             futures = {
                 executor.submit(
                     self.enrich_lead, leads_data[index], fast=fast, metrics=metrics

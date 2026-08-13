@@ -345,6 +345,15 @@ export interface ScraperAgentStatus {
   scraped?: number;
 }
 
+export interface ScraperRoundStatus {
+  round: number;
+  label?: string;
+  status?: "running" | "done" | "failed";
+  scraped?: number;
+  kept?: number;
+  deleted?: number;
+}
+
 export interface ScraperJobStatusResponse {
   job_id: string;
   status: ScraperJobStatus;
@@ -364,6 +373,7 @@ export interface ScraperJobStatusResponse {
   failed_urls?: string[];
   logs?: ScraperLogEntry[];
   agents?: ScraperAgentStatus[];
+  rounds?: ScraperRoundStatus[];
 }
 
 export interface SearchQueryOptimizeResponse {

@@ -1,7 +1,6 @@
 """Wire scraper jobs to the job store with live terminal logs."""
 
 import logging
-import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -23,14 +22,31 @@ from app.utils.auto_query_rotation import (
 )
 from app.utils.scrape_defaults import cities_for_country, normalize_country_name
 from app.services.scraper_job_store import scraper_job_store
+from app.utils.host_limits import constrained_worker_cap, is_constrained_host
 from app.utils.scrape_sources import ScrapeSourceMode
 from app.utils.website_utils import WebsiteFilter
 
 logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, str, str], None]
 
-# Bounded pool — avoids "can't start new thread" / pending-forever jobs on Railway
-_SCRAPE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scrape-job")
+# Single shared worker on Railway — nested pools + Playwright exhaust OS threads
+_SCRAPE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1 if is_constrained_host() else 2,
+    thread_name_prefix="scrape-job",
+)
+
+
+def _queue_job(fn, *args, **kwargs) -> None:
+    """Submit to the shared pool; re-raise RuntimeError with a clear message."""
+    try:
+        _SCRAPE_EXECUTOR.submit(fn, *args, **kwargs)
+    except RuntimeError as exc:
+        if "can't start new thread" in str(exc).lower() or "thread" in str(exc).lower():
+            raise RuntimeError(
+                "Server is out of threads/memory. Restart the Railway backend, "
+                "then scrape with limit 3–5 (Maps only)."
+            ) from exc
+        raise
 
 
 def _make_callbacks(job_id: str) -> tuple[ProgressCallback, Callable[[str, str, str], None]]:
@@ -57,6 +73,11 @@ def _run_job(job_id: str, user_id: int, data: ScraperStartRequest) -> None:
     try:
         on_progress, on_log = _make_callbacks(job_id)
         on_log("info", "init", "Job started")
+        scraper_job_store.begin_round(
+            job_id,
+            1,
+            label=f"{(data.keyword or '').strip()} · {(data.location or '').strip()}".strip(" ·"),
+        )
         scraper_job_store.update(job_id, progress=3, stage="init", message="Loading account...")
         db = SessionLocal()
         user = db.query(User).filter(User.id == user_id).first()
@@ -80,6 +101,13 @@ def _run_job(job_id: str, user_id: int, data: ScraperStartRequest) -> None:
         if cached:
             on_log("info", "cache", f"Using {cached.count} lead(s) from background cache")
             on_log("success", "done", cached.message)
+            scraper_job_store.finish_round(
+                job_id,
+                1,
+                scraped=cached.count,
+                kept=cached.count,
+                deleted=0,
+            )
             scraper_job_store.complete(job_id, cached.model_dump())
             delete_checkpoint(job_id)
             return
@@ -108,6 +136,13 @@ def _run_job(job_id: str, user_id: int, data: ScraperStartRequest) -> None:
                 save_checkpoint(job_id, {"partial_result": result.model_dump(), "cancelled": True})
             return
         on_log("success", "done", result.message or f"Done — {result.count} leads saved")
+        scraper_job_store.finish_round(
+            job_id,
+            1,
+            scraped=result.count,
+            kept=result.count,
+            deleted=0,
+        )
         scraper_job_store.complete(job_id, result.model_dump())
         delete_checkpoint(job_id)
     except HTTPException as exc:
@@ -156,14 +191,16 @@ def start_scraper_job(user_id: int, data: ScraperStartRequest) -> str:
             stage="init",
             message="Queued…",
         )
-        _SCRAPE_EXECUTOR.submit(_run_job, job_id, user_id, data)
+        _queue_job(_run_job, job_id, user_id, data)
     except Exception as exc:
         logger.exception("Failed to queue scrape job %s: %s", job_id, exc)
-        scraper_job_store.fail(
-            job_id,
-            "Server could not start the scrape worker (often low memory / stuck threads). "
-            "Restart the Railway service, then retry with limit 3–5.",
-        )
+        msg = str(exc)
+        if "thread" in msg.lower() or "memory" in msg.lower():
+            msg = (
+                "Server is out of threads/memory. Restart the Railway backend, "
+                "then retry with limit 3–5."
+            )
+        scraper_job_store.fail(job_id, msg)
     return job_id
 
 
@@ -317,7 +354,9 @@ def _run_country_auto_job(
         brain_profile,
         rotate=bool(getattr(data, "rotate_keywords", True)),
     )
-    agents = max(1, min(int(parallel_agents or 3), 5, len(cities)))
+    agents = max(1, min(int(parallel_agents or 3), constrained_worker_cap(), 5, len(cities)))
+    if is_constrained_host():
+        agents = 1
     rotate_on = len(kw_pool) > 1
     scraper_job_store.update(
         job_id,
@@ -372,6 +411,8 @@ def _run_country_auto_job(
                 }
             )
         scraper_job_store.set_agents(job_id, roster)
+        wave_label = ", ".join(f"{kw} @ {city.split(',')[0].strip()}" for kw, city in zip(wave_keywords, batch))
+        scraper_job_store.begin_round(job_id, wave, label=wave_label)
 
         scraper_job_store.update(
             job_id,
@@ -435,6 +476,13 @@ def _run_country_auto_job(
                     stage="auto",
                 )
 
+        scraper_job_store.finish_round(
+            job_id,
+            wave,
+            scraped=wave_scraped,
+            kept=wave_kept,
+            deleted=wave_deleted,
+        )
         job = scraper_job_store.get(job_id, user_id)
         stats_msg = (
             f"Wave {wave} done — kept {wave_kept} phones this wave "
@@ -540,6 +588,7 @@ def _run_auto_job(
             scrape_data = lock_auto_internet_only(
                 scrape_data.model_copy(update={"auto_generate_whatsapp": False})
             )
+            scraper_job_store.begin_round(job_id, iteration, label=query_label)
 
             def auto_progress(percent: int, stage: str, message: str) -> None:
                 full = f"Round {iteration} [{query_label}]: {message}"
@@ -573,6 +622,13 @@ def _run_auto_job(
                     )
                     scraper_job_store.add_auto_stats(
                         job_id, scraped=cached.count, kept=kept, deleted=deleted
+                    )
+                    scraper_job_store.finish_round(
+                        job_id,
+                        iteration,
+                        scraped=cached.count,
+                        kept=kept,
+                        deleted=deleted,
                     )
                     auto_log("success", "cache", cached.message)
                     if scraper_job_store.is_cancelled(job_id):
@@ -609,6 +665,13 @@ def _run_auto_job(
             )
             scraper_job_store.add_auto_stats(
                 job_id, scraped=result.count, kept=kept, deleted=deleted
+            )
+            scraper_job_store.finish_round(
+                job_id,
+                iteration,
+                scraped=result.count,
+                kept=kept,
+                deleted=deleted,
             )
 
             job = scraper_job_store.get(job_id, user_id)
@@ -700,13 +763,35 @@ def start_auto_scraper_job(
             resolved_country = normalize_country_name(data.location)
 
     job_id = scraper_job_store.create(user_id, mode="auto")
-    thread = threading.Thread(
-        target=_run_auto_job,
-        args=(job_id, user_id, data, interval_seconds),
-        kwargs={"country": resolved_country, "parallel_agents": parallel_agents},
-        daemon=True,
-    )
-    thread.start()
+    agents = 1 if is_constrained_host() else max(1, min(int(parallel_agents or 2), constrained_worker_cap()))
+    try:
+        scraper_job_store.update(
+            job_id,
+            status="running",
+            progress=1,
+            stage="auto",
+            message="Queued auto scrape…",
+        )
+        _queue_job(
+            _run_auto_job,
+            job_id,
+            user_id,
+            data,
+            interval_seconds,
+            country=resolved_country,
+            parallel_agents=agents,
+        )
+    except Exception as exc:
+        logger.exception("Failed to queue auto scrape %s: %s", job_id, exc)
+        scraper_job_store.fail(
+            job_id,
+            str(exc)
+            if "thread" in str(exc).lower() or "memory" in str(exc).lower()
+            else (
+                "Server could not start auto scrape (out of threads/memory). "
+                "Restart Railway and try again."
+            ),
+        )
     return job_id
 
 

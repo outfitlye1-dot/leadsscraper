@@ -175,7 +175,7 @@ def create_app() -> FastAPI:
         payload: dict = {
             "status": "healthy",
             "version": settings.APP_VERSION,
-            "build": "scrape-cors-fix-v2",
+            "build": "thread-cap-v3",
         }
         if warnings:
             payload["warnings"] = warnings

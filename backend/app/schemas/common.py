@@ -232,6 +232,15 @@ class ScraperAgentStatus(BaseModel):
     scraped: int = 0
 
 
+class ScraperRoundStatus(BaseModel):
+    round: int
+    label: str = ""
+    status: Literal["running", "done", "failed"] = "running"
+    scraped: int = 0
+    kept: int = 0
+    deleted: int = 0
+
+
 class ScraperJobStatusResponse(BaseModel):
     job_id: str
     status: Literal["pending", "running", "paused", "completed", "failed", "cancelled"]
@@ -251,6 +260,7 @@ class ScraperJobStatusResponse(BaseModel):
     failed_urls: list[str] = Field(default_factory=list)
     logs: list[ScraperLogEntry] = Field(default_factory=list)
     agents: list[ScraperAgentStatus] = Field(default_factory=list)
+    rounds: list[ScraperRoundStatus] = Field(default_factory=list)
 
 
 class ScraperJobControlResponse(BaseModel):

@@ -10,6 +10,7 @@ import type {
   ScraperJobStatusResponse,
   ScraperLogEntry,
   ScraperResponse,
+  ScraperRoundStatus,
   ScrapeMetricsResponse,
 } from "@/lib/types";
 
@@ -53,12 +54,14 @@ interface ScraperJobState {
   iteration: number;
   autoKeptTotal: number;
   autoDeletedTotal: number;
+  autoScrapedTotal: number;
   cancelRequested: boolean;
   result: ScraperResponse | null;
   errorMsg: string;
   isSubmitting: boolean;
   logs: ScraperLogEntry[];
   agents: ScraperAgentStatus[];
+  rounds: ScraperRoundStatus[];
   liveMetrics: ScrapeMetricsResponse | null;
   jobApiStatus: ScraperJobStatusResponse["status"] | null;
   syncOwner: (userId: number | null) => void;
@@ -91,9 +94,11 @@ export const useScraperJobStore = create<ScraperJobState>()(
             iteration: data.iteration ?? 0,
             autoKeptTotal: data.auto_kept_total ?? 0,
             autoDeletedTotal: data.auto_deleted_total ?? 0,
+            autoScrapedTotal: data.auto_scraped_total ?? 0,
             cancelRequested: data.cancel_requested ?? false,
             logs: data.logs ?? [],
             agents: data.agents ?? [],
+            rounds: data.rounds ?? [],
             liveMetrics: data.live_metrics ?? null,
             jobApiStatus: data.status,
           });
@@ -218,12 +223,14 @@ export const useScraperJobStore = create<ScraperJobState>()(
         iteration: 0,
         autoKeptTotal: 0,
         autoDeletedTotal: 0,
+        autoScrapedTotal: 0,
         cancelRequested: false,
         result: null,
         errorMsg: "",
         isSubmitting: false,
         logs: [],
         agents: [],
+        rounds: [],
         liveMetrics: null,
         jobApiStatus: null,
 
@@ -255,9 +262,11 @@ export const useScraperJobStore = create<ScraperJobState>()(
             iteration: 0,
             autoKeptTotal: 0,
             autoDeletedTotal: 0,
+            autoScrapedTotal: 0,
             cancelRequested: false,
             logs: [],
             agents: [],
+            rounds: [],
           });
         },
 
@@ -276,9 +285,11 @@ export const useScraperJobStore = create<ScraperJobState>()(
             iteration: 0,
             autoKeptTotal: 0,
             autoDeletedTotal: 0,
+            autoScrapedTotal: 0,
             cancelRequested: false,
             logs: [{ seq: 0, ts: new Date().toISOString(), level: "info", stage: "init", text: initialMessage }],
             agents: [],
+            rounds: [],
           });
           startPolling(jobId);
         },
@@ -392,12 +403,14 @@ export const useScraperJobStore = create<ScraperJobState>()(
             iteration: 0,
             autoKeptTotal: 0,
             autoDeletedTotal: 0,
+            autoScrapedTotal: 0,
             cancelRequested: false,
             result: null,
             errorMsg: "",
             isSubmitting: false,
             logs: [],
             agents: [],
+            rounds: [],
             liveMetrics: null,
             jobApiStatus: null,
           });

@@ -28,6 +28,7 @@ class ScraperJobState:
     auto_deleted_total: int = 0
     auto_scraped_total: int = 0
     agents: list[dict[str, Any]] = field(default_factory=list)
+    rounds: list[dict[str, Any]] = field(default_factory=list)
     logs: list[dict[str, Any]] = field(default_factory=list)
     log_seq: int = 0
     checkpoint: dict[str, Any] | None = None
@@ -293,6 +294,61 @@ class ScraperJobStore:
             if not job:
                 return
             job.agents = [dict(a) for a in agents]
+            job.updated_at = datetime.now(UTC)
+
+    def begin_round(self, job_id: str, round_num: int, *, label: str = "") -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            entry = {
+                "round": round_num,
+                "label": (label or "").strip(),
+                "status": "running",
+                "scraped": 0,
+                "kept": 0,
+                "deleted": 0,
+            }
+            for i, existing in enumerate(job.rounds):
+                if int(existing.get("round", 0)) == round_num:
+                    job.rounds[i] = entry
+                    job.updated_at = datetime.now(UTC)
+                    return
+            job.rounds.append(entry)
+            job.updated_at = datetime.now(UTC)
+
+    def finish_round(
+        self,
+        job_id: str,
+        round_num: int,
+        *,
+        scraped: int,
+        kept: int,
+        deleted: int,
+        status: Literal["done", "failed"] = "done",
+    ) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            for existing in job.rounds:
+                if int(existing.get("round", 0)) == round_num:
+                    existing["status"] = status
+                    existing["scraped"] = scraped
+                    existing["kept"] = kept
+                    existing["deleted"] = deleted
+                    job.updated_at = datetime.now(UTC)
+                    return
+            job.rounds.append(
+                {
+                    "round": round_num,
+                    "label": "",
+                    "status": status,
+                    "scraped": scraped,
+                    "kept": kept,
+                    "deleted": deleted,
+                }
+            )
             job.updated_at = datetime.now(UTC)
 
     def update_agent(

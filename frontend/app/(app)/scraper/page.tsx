@@ -152,7 +152,10 @@ function ScraperPageContent() {
   const isAutoMode = useScraperJobStore((s) => s.isAutoMode);
   const iteration = useScraperJobStore((s) => s.iteration);
   const autoKeptTotal = useScraperJobStore((s) => s.autoKeptTotal);
+  const autoDeletedTotal = useScraperJobStore((s) => s.autoDeletedTotal);
+  const autoScrapedTotal = useScraperJobStore((s) => s.autoScrapedTotal);
   const agents = useScraperJobStore((s) => s.agents ?? []);
+  const rounds = useScraperJobStore((s) => s.rounds ?? []);
   const result = useScraperJobStore((s) => s.result);
   const errorMsg = useScraperJobStore((s) => s.errorMsg);
   const progress = useScraperJobStore((s) => s.progress);
@@ -649,7 +652,10 @@ function ScraperPageContent() {
               result={result}
               errorMsg={errorMsg}
               autoKeptTotal={autoKeptTotal}
+              autoDeletedTotal={autoDeletedTotal}
+              autoScrapedTotal={autoScrapedTotal}
               agents={agents}
+              rounds={rounds}
               liveMetrics={liveMetrics}
               apiStatus={jobApiStatus}
               onPause={jobId && !isAutoMode && jobApiStatus === "running" ? () => void pauseJob(jobId) : undefined}

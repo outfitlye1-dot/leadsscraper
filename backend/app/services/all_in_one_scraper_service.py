@@ -327,27 +327,42 @@ class AllInOneScraperService:
                 and not (job_id and _job_store.is_cancelled(job_id))
             ):
                 prog(48, "web_search", "Supplementing with Internet search...")
-                web_ex = ThreadPoolExecutor(max_workers=1)
-                try:
-                    web_timeout = max(
-                        40.0, float(settings.SCRAPER_INTERNET_MAX_SECONDS or 60.0)
-                    )
-                    web_fut = web_ex.submit(scrape_web)
+                from app.utils.host_limits import is_constrained_host
+
+                if is_constrained_host():
+                    # Avoid nested ThreadPoolExecutor — Railway is near OS thread limit
                     try:
-                        search_leads = web_fut.result(timeout=web_timeout)
+                        search_leads = scrape_web()
                         prog(
                             55,
                             "web_search",
                             f"Internet: found {len(search_leads)} results",
                         )
-                    except TimeoutError:
-                        prog(55, "web_search", f"Internet supplement timed out")
-                        search_leads = []
-                except Exception as exc:
-                    errors.append(f"Internet: {exc}")
-                    prog(55, "web_search", f"Internet failed: {exc}")
-                finally:
-                    web_ex.shutdown(wait=False, cancel_futures=True)
+                    except Exception as exc:
+                        errors.append(f"Internet: {exc}")
+                        prog(55, "web_search", f"Internet failed: {exc}")
+                else:
+                    web_ex = ThreadPoolExecutor(max_workers=1)
+                    try:
+                        web_timeout = max(
+                            40.0, float(settings.SCRAPER_INTERNET_MAX_SECONDS or 60.0)
+                        )
+                        web_fut = web_ex.submit(scrape_web)
+                        try:
+                            search_leads = web_fut.result(timeout=web_timeout)
+                            prog(
+                                55,
+                                "web_search",
+                                f"Internet: found {len(search_leads)} results",
+                            )
+                        except TimeoutError:
+                            prog(55, "web_search", "Internet supplement timed out")
+                            search_leads = []
+                    except Exception as exc:
+                        errors.append(f"Internet: {exc}")
+                        prog(55, "web_search", f"Internet failed: {exc}")
+                    finally:
+                        web_ex.shutdown(wait=False, cancel_futures=True)
 
             if needs_meta:
                 prog(56, "meta_ads", "Searching Meta Ad Library...")

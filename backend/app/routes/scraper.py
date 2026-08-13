@@ -19,6 +19,7 @@ from app.schemas.common import (
     ScraperJobHistoryResponse,
     ScraperJobStartResponse,
     ScraperJobStatusResponse,
+    ScraperRoundStatus,
     ScraperStartRequest,
     ScraperStartResponse,
 )
@@ -146,14 +147,28 @@ def start_auto_scraper(
     data: AutoScrapeStartRequest,
     current_user: User = Depends(get_current_user),
 ) -> ScraperJobStartResponse:
-    job_id = start_auto_scraper_job(
-        current_user.id,
-        data,
-        interval_seconds=data.interval_seconds,
-        country=data.country,
-        parallel_agents=data.parallel_agents,
-    )
-    return ScraperJobStartResponse(job_id=job_id)
+    try:
+        job_id = start_auto_scraper_job(
+            current_user.id,
+            data,
+            interval_seconds=data.interval_seconds,
+            country=data.country,
+            parallel_agents=data.parallel_agents,
+        )
+        return ScraperJobStartResponse(job_id=job_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("auto/start failed for user %s: %s", current_user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Server is out of threads/memory. Restart the Railway backend, "
+                "then try auto scrape again with fewer agents."
+                if "thread" in str(exc).lower()
+                else f"Could not start auto scraper: {type(exc).__name__}: {exc}"
+            ),
+        ) from exc
 
 
 @router.post(
@@ -276,6 +291,13 @@ def _job_to_response(job) -> ScraperJobStatusResponse:
             agents.append(ScraperAgentStatus(**raw))
         except Exception:
             continue
+    raw_rounds = list(getattr(job, "rounds", None) or [])
+    rounds = []
+    for raw in raw_rounds:
+        try:
+            rounds.append(ScraperRoundStatus(**raw))
+        except Exception:
+            continue
     return ScraperJobStatusResponse(
         job_id=job.job_id,
         status=job.status,
@@ -295,6 +317,7 @@ def _job_to_response(job) -> ScraperJobStatusResponse:
         failed_urls=list(getattr(job, "failed_urls", []) or [])[:50],
         logs=job.logs,
         agents=agents,
+        rounds=rounds,
     )
 
 

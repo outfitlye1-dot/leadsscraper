@@ -11,7 +11,7 @@ import {
   RefreshCw,
   XCircle,
 } from "lucide-react";
-import type { ScraperAgentStatus, ScraperResponse, ScrapeMetricsResponse } from "@/lib/types";
+import type { ScraperAgentStatus, ScraperResponse, ScraperRoundStatus, ScrapeMetricsResponse } from "@/lib/types";
 import { JobStatusBadge } from "@/components/ui/StatusBadge";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -29,7 +29,10 @@ type Props = {
   result: ScraperResponse | null;
   errorMsg: string;
   autoKeptTotal: number;
+  autoDeletedTotal?: number;
+  autoScrapedTotal?: number;
   agents?: ScraperAgentStatus[];
+  rounds?: ScraperRoundStatus[];
   liveMetrics?: ScrapeMetricsResponse | null;
   apiStatus?: string | null;
   onPause?: () => void;
@@ -62,12 +65,121 @@ function agentStatusLabel(status?: string) {
   }
 }
 
-function AgentRoster({ agents }: { agents: ScraperAgentStatus[] }) {
+function RoundStatusPanel({
+  rounds,
+  iteration,
+  isAutoMode,
+  autoKeptTotal,
+  autoScrapedTotal,
+  autoDeletedTotal,
+  liveLeads,
+}: {
+  rounds: ScraperRoundStatus[];
+  iteration: number;
+  isAutoMode: boolean;
+  autoKeptTotal: number;
+  autoScrapedTotal?: number;
+  autoDeletedTotal?: number;
+  liveLeads?: number;
+}) {
+  const sorted = [...rounds].sort((a, b) => a.round - b.round);
+  const currentRound = iteration || sorted[sorted.length - 1]?.round || 1;
+
+  if (!sorted.length && !isAutoMode) {
+    return (
+      <div className="border-t border-border/60 px-4 py-3">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Round</p>
+        <div className="mt-2 flex items-center justify-between rounded-lg border border-border/50 bg-muted/15 px-3 py-2.5">
+          <div>
+            <p className="text-xs font-semibold">Round 1</p>
+            <p className="text-xs text-muted-foreground">Manual scrape</p>
+          </div>
+          <span className="text-sm font-semibold tabular-nums text-emerald-700">
+            {liveLeads ?? 0} leads
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!sorted.length) return null;
+
+  const doneRounds = sorted.filter((r) => r.status === "done").length;
+  const totalKept = autoKeptTotal || sorted.reduce((sum, r) => sum + (r.kept ?? 0), 0);
+
+  return (
+    <div className="border-t border-border/60 px-4 py-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          {isAutoMode ? "Rounds" : "Round status"}
+        </p>
+        <span className="text-xs font-medium text-foreground">
+          Round {currentRound}
+          {isAutoMode && doneRounds > 0 ? ` · ${doneRounds} done` : ""}
+        </span>
+      </div>
+
+      {(autoKeptTotal > 0 || (autoScrapedTotal ?? 0) > 0) && isAutoMode ? (
+        <p className="mb-2 text-xs text-muted-foreground">
+          Total: <span className="font-medium text-foreground">{totalKept} kept</span>
+          {(autoScrapedTotal ?? 0) > 0 ? ` · ${autoScrapedTotal} scraped` : ""}
+          {(autoDeletedTotal ?? 0) > 0 ? ` · ${autoDeletedTotal} removed` : ""}
+        </p>
+      ) : null}
+
+      <ul className="max-h-52 space-y-1.5 overflow-y-auto">
+        {sorted.map((round) => {
+          const isRunning = round.status === "running";
+          const leads = round.kept ?? round.scraped ?? 0;
+          return (
+            <li
+              key={round.round}
+              className={cn(
+                "flex items-start justify-between gap-2 rounded-lg border px-3 py-2",
+                isRunning ? "border-emerald-500/30 bg-emerald-500/5" : "border-border/50 bg-muted/10"
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold tabular-nums">Round {round.round}</span>
+                  {isRunning ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-emerald-700">
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      </span>
+                      Running
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Done
+                    </span>
+                  )}
+                </div>
+                {round.label ? (
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground" title={round.label}>
+                    {round.label}
+                  </p>
+                ) : null}
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="text-sm font-semibold tabular-nums">{isRunning && !leads ? "…" : leads}</p>
+                <p className="text-[10px] text-muted-foreground">leads</p>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function AgentRoster({ agents, roundLabel }: { agents: ScraperAgentStatus[]; roundLabel?: string }) {
   if (!agents.length) return null;
   return (
     <div className="space-y-2 border-t border-border/60 px-4 py-3">
       <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-        Agents
+        {roundLabel ? `Agents · ${roundLabel}` : "Agents"}
       </p>
       <ul className="space-y-2">
         {agents.map((agent) => {
@@ -135,7 +247,10 @@ export function ScraperRunStatus({
   result,
   errorMsg,
   autoKeptTotal,
+  autoDeletedTotal = 0,
+  autoScrapedTotal = 0,
   agents = [],
+  rounds = [],
   liveMetrics,
   apiStatus,
   onPause,
@@ -173,27 +288,43 @@ export function ScraperRunStatus({
               {!isAutoMode ? (
                 <span className="text-sm font-semibold tabular-nums">{progress}%</span>
               ) : (
-                <span className="text-xs text-muted-foreground">Wave {iteration || 1}</span>
+                <span className="rounded-md bg-muted px-2 py-0.5 text-xs font-semibold tabular-nums">
+                  Round {iteration || 1}
+                </span>
               )}
             </div>
             <p className="mt-2 text-sm font-medium">
-              {isAutoMode ? "Auto scraping in progress" : progressMessage || "Scraping in progress"}
+              {isAutoMode
+                ? progressMessage || "Auto scraping in progress"
+                : progressMessage || "Scraping in progress"}
             </p>
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
               {isAutoMode
                 ? [
-                    progressMessage,
-                    autoKeptTotal > 0 ? `${autoKeptTotal} kept` : null,
+                    autoKeptTotal > 0 ? `${autoKeptTotal} leads kept total` : null,
+                    (autoScrapedTotal ?? 0) > 0 ? `${autoScrapedTotal} scraped` : null,
                   ]
                     .filter(Boolean)
-                    .join(" · ") || "Starting agents…"
-                : [autoKeptTotal > 0 ? `${autoKeptTotal} kept` : null, eta]
+                    .join(" · ") || "Starting rounds…"
+                : [eta, (m?.leads_saved ?? m?.leads_parsed) ? `${m?.leads_saved ?? m?.leads_parsed} found` : null]
                     .filter(Boolean)
                     .join(" · ") || "Working…"}
             </p>
           </div>
 
-          {isAutoMode && agents.length > 0 ? <AgentRoster agents={agents} /> : null}
+          <RoundStatusPanel
+            rounds={rounds}
+            iteration={iteration}
+            isAutoMode={isAutoMode}
+            autoKeptTotal={autoKeptTotal}
+            autoScrapedTotal={autoScrapedTotal}
+            autoDeletedTotal={autoDeletedTotal}
+            liveLeads={m?.leads_saved ?? m?.leads_parsed}
+          />
+
+          {isAutoMode && agents.length > 0 ? (
+            <AgentRoster agents={agents} roundLabel={`Round ${iteration || 1}`} />
+          ) : null}
 
           {!isAutoMode ? (
             <div className="flex items-center px-4 py-3">
@@ -307,6 +438,17 @@ export function ScraperRunStatus({
           </div>
         ))}
       </div>
+
+      {rounds.length > 0 ? (
+        <RoundStatusPanel
+          rounds={rounds}
+          iteration={iteration}
+          isAutoMode={isAutoMode}
+          autoKeptTotal={autoKeptTotal}
+          autoScrapedTotal={autoScrapedTotal}
+          autoDeletedTotal={autoDeletedTotal}
+        />
+      ) : null}
 
       <div className="flex flex-wrap gap-2 p-3">
         {saved > 0 ? (
